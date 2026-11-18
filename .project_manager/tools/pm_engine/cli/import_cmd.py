@@ -400,7 +400,7 @@ def main(home, argv: list[str] | None = None) -> int:
     if args.dry_run:
         # opencode 모델 결정적 해소 계획(LLM 아님·fill 이전 단계). 복사 *예정* src 에
         #         {{OPENCODE_PRO_MODEL}} 가 잔존하면(opencode 트리) 어느 경로로 갈지·플래그값·
-        #         tty 여부만 출력한다 — 프롬프트·파일변경·`opencode models` 실호출 0.
+        #         tty 여부만 출력한다 — 프롬프트·파일변경·opencode 모델 목록 실조회 0.
         if import_fill._plan_opencode_model_targets(actions):
             stdin_tty = bool(getattr(sys.stdin, "isatty", lambda: False)())
             print("  [dry-run] opencode 모델 해소 계획 (결정적·LLM 아님·파일 미변경):")
@@ -408,7 +408,7 @@ def main(home, argv: list[str] | None = None) -> int:
             if args.opencode_model:
                 print(f"    경로: flag → --opencode-model '{args.opencode_model}' 로 치환.")
             elif stdin_tty:
-                print("    경로: interactive → `opencode models` 번호목록·대화형 선택 후 치환.")
+                print("    경로: interactive → opencode 모델 목록 번호목록·대화형 선택 후 치환.")
             else:
                 print("    경로: todo → 비-tty(또는 opencode 부재) — 치환 안 함·TODO 마커로 대체.")
         # MF2: --dry-run = fill 계획 미리보기. 실 하니스 미호출·파일 미변경. auto 면 무엇을
@@ -489,7 +489,7 @@ def main(home, argv: list[str] | None = None) -> int:
     #    (활성화가 그 순서
     #    가정을 깸·옛 "todo 토큰은 YAML 주석으로 남아 leak 없음" 전제 무효.) local.conf 기록
     #    (record_opencode_model)은 board init 이 local.conf 를 만든 *뒤* 로 분리(아래).
-    #    LLM 추측(fill)이 아니라 `opencode models` 결정적 조회로 해소(환각·미가용 모델 제거).
+    #    LLM 추측(fill)이 아니라 opencode 모델 목록 결정적 조회로 해소(환각·미가용 모델 제거).
     #    범위 = substitute_placeholders 와 동일한 copied_relpaths(비파괴). claude-only=inactive.
     model_result = import_fill.resolve_opencode_model(home,
         dest_root, copied_relpaths, model_arg=args.opencode_model,

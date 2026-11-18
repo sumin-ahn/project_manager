@@ -306,11 +306,11 @@ def test_update_facade_deployed_to_adopter_root(harness: str, tmp_path: Path,
     아니라 `--harness` **정체성** 목록이다(의미 범주 안 섞음). 파사드 배포는 하네스-무관(전 하네스가
     templates/<h>/ 루트 파일 → 채택자 루트로 복사)이라 codex 도 정당 편입 — 손-열거
     `["claude","opencode"]` 는 codex(ADR-0070) 를 못 따라온 decay 였다. plan_copy 가 AGENTS.md
-    처럼 채택자 루트로 복사한다. opencode 경로의 라이브 `opencode models` 호출은
+    처럼 채택자 루트로 복사한다. opencode 경로의 라이브 opencode 모델 목록 조회는
     _real_models_runner 고정으로 차단(codex/claude 는 그 교체 지점 미호출·무영향).
     """
     pm_import = _load_pm_import()
-    # opencode models CLI 라이브 호출 차단(설치 환경서도 hermetic).
+    # opencode 모델 목록 조회 라이브 호출 차단(설치 환경서도 hermetic).
     monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
 
     dest = tmp_path / "adopter"

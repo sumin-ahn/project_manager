@@ -316,15 +316,18 @@ def _resolving_runner(cmd, **kwargs):
     return subprocess.run([contract.resolve_executable(cmd[0], kwargs.get("env")), *cmd[1:]], **kwargs)
 
 
-def _watchdog_runner(cmd, *, capture_output=True, text=True, timeout=OPENCODE_TURN_TIMEOUT_SEC, **_kwargs):
+def _watchdog_runner(cmd, *, capture_output=True, text=True, timeout=OPENCODE_TURN_TIMEOUT_SEC,
+                     cwd=None, **_kwargs):
     """OpenCode turn 실행기 — 첫 이벤트 워치독(기본 대기·재시도 횟수)을 전체 시간 상한 안에서 쓴다.
 
-    캡처·text 는 워치독이 항상 한다. 재시도 소진(`watchdog.StallWatchdogError`)은 driver 가 처리한다."""
+    캡처·text·표준 입력 닫기는 워치독이 항상 한다. `cwd` 는 자식의 작업 폴더다(opencode 2.x 는 실행
+    인자로 작업 폴더를 받지 않는다). 재시도 소진(`watchdog.StallWatchdogError`)은 driver 가 처리한다."""
     return watchdog.run_with_first_event_watchdog(
         cmd,
         first_event_timeout=watchdog.first_event_timeout_default(),
         overall_timeout=timeout,
         retries=watchdog.stall_retries_default(),
+        cwd=cwd,
     )
 
 

@@ -164,7 +164,7 @@ def test_pm_ticket_live_claude(harness_tmp_path):
     """실 claude 가 pm-ticket 스킬만 보고 자족적 티켓을 authoring·실 board 상태 단언(hard).
 
     스킬(SKILL.md)만 컨텍스트로 주고 [발행 → 5절 fill → promote]를 시킨다 — 진입문서 미제공. claude 는
-    subprocess cwd 존중(`--dir` 불요). 발행된 티켓이 존재 + placeholder 0 + 주제 marker(SIGTERM) 포함을
+    subprocess cwd 를 작업 폴더로 쓴다. 발행된 티켓이 존재 + placeholder 0 + 주제 marker(SIGTERM) 포함을
     hard 단언(미실행/미충전 시 red). API 과금."""
     dest = _import_adopter(harness_tmp_path, "claude")
     prompt = _authoring_prompt(_SKILL.read_text(encoding="utf-8"))
@@ -187,13 +187,12 @@ def test_pm_ticket_live_opencode(harness_tmp_path):
     """실 opencode(출하 모델)가 스킬만 보고 자족적 티켓을 authoring·실 board 상태 단언.
 
     claude 와 같은 스킬-only 프롬프트. side-effect(실 board 파일 상태)로만 판정해 opencode 의 tool-call
-    비노출에 강건(release_cluster 위임-관측 비대칭 상속). `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판)·
-    `--dangerously-skip-permissions`(비대화 헤드리스 auto-reject 회피·throwaway tmp 홈 격리). API 과금 0."""
+    비노출에 강건(release_cluster 위임-관측 비대칭 상속). 실행 위치는 자식 cwd·`--standalone`(이 실행 전용 서버)·
+    `--auto`(비대화 헤드리스에서 묻는 권한 자동 승인·throwaway tmp 홈 격리). API 과금 0."""
     dest = _import_adopter(harness_tmp_path, "opencode")
     prompt = _authoring_prompt(_SKILL.read_text(encoding="utf-8"))
     proc = subprocess.run(
-        ["opencode", "run", "--agent", "build", "--dir", str(dest),
-         "--dangerously-skip-permissions", "-m", LIVE_MODEL, prompt],
+        ["opencode", "run", "--standalone", "--agent", "build", "--auto", "-m", LIVE_MODEL, prompt],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env=_live_env(LIVE_MODEL), timeout=_OPENCODE_TIMEOUT,
     )

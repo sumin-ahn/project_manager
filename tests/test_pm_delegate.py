@@ -1,7 +1,7 @@
 """pm_delegate.py 엔진 코어 단위 테스트 — cross-harness 역할 위임 채널 (ADR-0075·확정 spike).
 
-대부분 mock(run_fn DI)이며, 권한 계약만 실제 codex sandbox opt-in과 무과금 opencode `agent list`
-통합으로 고정한다. 검증 기준(ticket DoD):
+대부분 mock(run_fn DI)이며, 권한 계약만 실제 codex sandbox opt-in 통합으로 고정한다.
+검증 기준(ticket DoD):
   ① 3 드라이버 argv 정확성(3하네스×4역할·codex 전역옵션 위치·cwd 핀·reasoning 드라이버 매핑·§3.3).
   ② config 해소 원자성(§3.2) — CLI 완전지정 미참조·부분 override 거부·hard fail-loud·미매핑 fail-loud·
      티어 세트 통째·비-개발 tier usage error.
@@ -210,22 +210,24 @@ def test_claude_argv_effort(pd):
     assert "--effort" in argv and argv[argv.index("--effort") + 1] == "high"
 
 
-def test_opencode_argv_agent_and_dir(pd):
-    """opencode는 native와 같은 custom 역할 agent를 직접 선택하고 cwd/file을 고정한다."""
-    dev = contract.build_opencode_argv("prov/m", None, "developer", "/w/t", "/tmp/p.md")
+def test_opencode_argv_agent_file_and_private_server(pd):
+    """opencode는 native와 같은 custom 역할 agent를 직접 선택하고 프롬프트 파일을 붙이며 이 실행 전용 서버
+    (`--standalone`)로 돈다. 작업 폴더는 실행 인자가 아니라 자식 cwd 다."""
+    dev = contract.build_opencode_argv("prov/m", None, "developer", "/tmp/p.md")
     assert dev[:2] == ["opencode", "run"]
     assert dev[dev.index("--file") + 1] == "/tmp/p.md"
-    assert dev[dev.index("--dir") + 1] == "/w/t"
+    assert "--standalone" in dev and "--dir" not in dev
     assert dev[dev.index("--agent") + 1] == "developer"
     assert dev[dev.index("-m") + 1] == "prov/m"
 
-    res = contract.build_opencode_argv("prov/m", None, "researcher", "/w", "/tmp/p.md")
+    res = contract.build_opencode_argv("prov/m", None, "researcher", "/tmp/p.md")
     assert res[res.index("--agent") + 1] == "researcher"
 
 
-def test_opencode_argv_variant(pd):
-    argv = contract.build_opencode_argv("prov/m", "medium", "architect", "/w", "/tmp/p.md")
-    assert "--variant" in argv and argv[argv.index("--variant") + 1] == "medium"
+def test_opencode_argv_reasoning_rides_on_the_model(pd):
+    """추론 강도는 모델 지정 `provider/model#강도` 에 붙는다(opencode 2.x 에 `--variant` 가 없다)."""
+    argv = contract.build_opencode_argv("prov/m", "medium", "architect", "/tmp/p.md")
+    assert argv[argv.index("-m") + 1] == "prov/m#medium" and "--variant" not in argv
 
 
 # ══ ② config 해소 원자성 (§3.2) ══════════════════════════════════════════════
@@ -351,13 +353,13 @@ def test_opencode_reasoning_checked_with_run_cwd_and_env(pd, monkeypatch, tmp_pa
         "opencode", "ollama/glm-5.2:cloud", "high")
     assert len(calls(fakebin)) == 1, "해소 단계가 모델 목록을 조회했다"
 
-    # 역방향 — 그 모델이 받는 값은 통과하고 argv 에 `--variant` 로 실린다.
+    # 역방향 — 그 모델이 받는 값은 통과하고 argv 의 모델 지정에 `#강도` 로 실린다.
     accepted = {**conf, "delegate.researcher.model": "ollama/ornith1.5:35b-a3b"}
     rc = _run_main(pd, monkeypatch, ["--role", "researcher", "--prompt-file", str(prompt),
                                      "--cwd", str(repo), "--dry-run"], accepted)
     captured = capsys.readouterr()
     assert rc == 0, captured.err
-    assert "--variant" in captured.out and "high" in captured.out
+    assert "ollama/ornith1.5:35b-a3b#high" in captured.out and "--variant" not in captured.out
 
 
 # ══ ④~⑨ main 통합 (mock run_fn·usage/fail-loud/dry-run) ═════════════════════
@@ -1123,7 +1125,7 @@ def test_raw_rows_without_run_id_or_copy_still_query_and_close_cleanly(
 @pytest.mark.skipif(not _can_symlink(), reason="symlink 생성 능력 필요")
 def test_opencode_symlink_cwd_preserves_lexical_process_and_file_paths(
         pd, tmp_path):
-    """symlink cwd에서도 --dir/--file/process cwd가 같은 미해소 lexical 경로를 쓴다."""
+    """symlink cwd에서도 --file/process cwd가 같은 미해소 lexical 경로를 쓴다."""
     real_cwd = tmp_path / "real-workspace"
     linked_cwd = tmp_path / "workspace-link"
     real_cwd.mkdir()
@@ -1131,12 +1133,11 @@ def test_opencode_symlink_cwd_preserves_lexical_process_and_file_paths(
     seen = {}
 
     def _capture(argv, *, stdin_text, cwd, env, timeout, harness):
-        dir_arg = argv[argv.index("--dir") + 1]
         file_arg = argv[argv.index("--file") + 1]
-        seen.update(process_cwd=cwd, dir_arg=dir_arg, file_arg=file_arg)
-        assert cwd == dir_arg == str(linked_cwd)
+        seen.update(process_cwd=cwd, file_arg=file_arg)
+        assert cwd == str(linked_cwd) and "--dir" not in argv
         assert Path(file_arg).is_relative_to(linked_cwd)
-        assert Path(file_arg).resolve().is_relative_to(Path(dir_arg).resolve())
+        assert Path(file_arg).resolve().is_relative_to(Path(cwd).resolve())
         return {
             "returncode": 0,
             "stdout": _opencode_stdout("완료"),
@@ -1157,7 +1158,6 @@ def test_opencode_symlink_cwd_preserves_lexical_process_and_file_paths(
         attempt="primary",
     )
 
-    assert result.argv[result.argv.index("--dir") + 1] == seen["dir_arg"]
     assert result.argv[result.argv.index("--file") + 1] == seen["file_arg"]
     assert not (real_cwd / ".project_manager").exists()
 
@@ -1666,8 +1666,8 @@ def test_read_role_permission_contract(pd):
     tools = rt[rt.index("--tools") + 1]
     assert not any(t in tools for t in ("Write", "Bash")) and "Edit" in tools
     # opencode reviewer: build/plan 축약 없이 custom 역할 카드 선택.
-    assert contract.build_opencode_argv("m", None, "code-reviewer", "/w", "/p")[
-        contract.build_opencode_argv("m", None, "code-reviewer", "/w", "/p").index("--agent") + 1] == "code-reviewer"
+    assert contract.build_opencode_argv("m", None, "code-reviewer", "/p")[
+        contract.build_opencode_argv("m", None, "code-reviewer", "/p").index("--agent") + 1] == "code-reviewer"
 
 
 def test_codex_read_attempt_reanchors_execution_root_env_preamble_and_cleanup(
@@ -2043,7 +2043,7 @@ def test_acl_platform_read_tmp_cleanup_on_runner_exception(
     ("codex", lambda pd: contract.build_codex_argv("m", None, "code-reviewer", "/w")),
     ("claude", lambda pd: contract.build_claude_argv("m", None, "code-reviewer")),
     ("opencode", lambda pd: contract.build_opencode_argv(
-        "m", None, "code-reviewer", "/w", "/p")),
+        "m", None, "code-reviewer", "/p")),
 ])
 def test_unresolved_write_target_is_loud_not_read_only_degrade(
         pd, tmp_path, harness, argv_fn):
@@ -2220,62 +2220,6 @@ def test_transport_prompt_write_restricts_owner_access_via_shared_function(
         assert transport.path.parent / delegate_temp._OPENCODE_TRANSPORT_IGNORE in restricted
     finally:
         delegate_temp._cleanup_attempt_transport(transport)
-
-
-@pytest.mark.integration
-@pytest.mark.skipif(
-    not shutil.which("opencode"),
-    reason="opencode 실제 `${TMPDIR}/opencode/*` 권한 선언 계약 — binary 필요",
-)
-def test_opencode_binary_permission_tracks_child_tmpdir(tmp_path):
-    """OpenCode 1.18.12 실제 agent 선언은 고정 /tmp가 아니라 child TMPDIR 값을 보간한다.
-
-    cold start 는 빈 XDG 만으로 격리되지 않는다. (1) 부모 셸이 `OPENCODE_CONFIG_DIR` 로 다른 설정
-    폴더를 가리키면 그 폴더를, (2) sandbox 가 이 저장소 안(임시 루트 `.project_manager/.local/tmp`)에
-    있으면 상위로 올라가 이 저장소의 `.opencode` 설정을 읽는다. 둘 다 플러그인 선언이라 opencode 가
-    fresh 설정 폴더에 의존성을 npm 에서 설치하며 30초 예산을 넘긴다(2026-09-04 실측 · npm 감사 호출
-    무응답). 설정 폴더 env 를 지우고 sandbox 를 자기 git 저장소로 선언해 두 입구를 닫는다."""
-    attempt = tmp_path / "attempt"
-    allowed = attempt / "opencode"
-    sandbox = tmp_path / "sandbox"
-    attempt.mkdir()
-    allowed.mkdir()
-    init_git_repo(sandbox)
-    env = dict(os.environ)
-    for key in ("OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "ORCA_OPENCODE_CONFIG_DIR"):
-        env.pop(key, None)
-    env.update({"TMPDIR": str(attempt), "TMP": str(allowed), "TEMP": str(allowed)})
-    for key, name in (
-        ("XDG_DATA_HOME", "xdg-data"),
-        ("XDG_CACHE_HOME", "xdg-cache"),
-        ("XDG_CONFIG_HOME", "xdg-config"),
-        ("XDG_STATE_HOME", "xdg-state"),
-    ):
-        path = tmp_path / name
-        path.mkdir()
-        env[key] = str(path)
-
-    # Windows 는 npm 셈(`opencode.cmd`)이라 이름 그대로는 CreateProcess 가 찾지 못한다.
-    completed = subprocess.run(
-        [shutil.which("opencode"), "agent", "list"],
-        cwd=sandbox,
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=30,
-        check=False,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    if os.name == "nt":
-        # Windows opencode 는 TMPDIR 이 아니라 TEMP 를 보간하고 `\` 로 잇는다(출력은 JSON 이스케이프).
-        expected = '"pattern": ' + _json.dumps(f"{allowed}\\opencode\\*", ensure_ascii=False)
-    else:
-        expected = f'"pattern": "{attempt}/opencode/*"'
-    assert expected in completed.stdout
-    assert '"pattern": "/tmp/opencode/*"' not in completed.stdout
 
 
 def test_read_tmp_unsupported_platform_preamble_is_explicit(
@@ -2747,7 +2691,7 @@ def test_argv_matrix_permission_contract(pd, harness, role):
             assert "--permission-mode" not in argv
             assert ("Bash" in tools) == (role == "code-reviewer")  # reviewer 만 Bash(pytest)
     else:  # opencode
-        argv = contract.build_opencode_argv("m", None, role, "/w", "/p")
+        argv = contract.build_opencode_argv("m", None, role, "/p")
         assert argv[argv.index("--agent") + 1] == role
 
 
@@ -2780,7 +2724,7 @@ def test_conf_delegate_timeout_failsoft(pd):
 
 def test_opencode_argv_has_message_positional(pd):
     """opencode run 은 --file 이 있어도 비어있지 않은 positional message 를 요구(부재 시 rc=1·실측)."""
-    argv = contract.build_opencode_argv("m", None, "developer", "/w", "/p")
+    argv = contract.build_opencode_argv("m", None, "developer", "/p")
     # 고정 message 선언은 공용 드라이버 계약(contract)이 소유한다 — 위임 wrapper 는 그 값을 쓴다.
     assert argv[:3] == ["opencode", "run", contract.OPENCODE_ATTACHED_MSG]
     assert argv[2].strip()  # 비어있지 않음
@@ -4145,20 +4089,18 @@ def _claude_assistant_error_event(error: str) -> str:
 
 
 def _opencode_api_error_event(response_body: str) -> str:
-    """opencode 1.18.4 provider APIError 실측 stdout JSONL 구성(responseBody passthrough)."""
+    """opencode 2.3.0 provider 오류 실측 stdout JSONL 구성(응답 본문 `error.response.body` passthrough).
+
+    사람용 `message` 는 분류 근거가 되지 않게 중립 문구로 둔다. 근거는 응답 본문의 상류 enum 이다."""
     return _json.dumps({
         "type": "error",
-        "timestamp": 1785456000000,
+        "timestamp": 1794993852316,
         "sessionID": "ses_measured_shape",
         "error": {
-            "name": "APIError",
-            "data": {
-                "message": "API key is invalid.",
-                "statusCode": 401,
-                "isRetryable": False,
-                "responseBody": response_body,
-                "metadata": {"url": "https://api.anthropic.com/v1/messages"},
-            },
+            "type": "provider.error",
+            "message": "provider error",
+            "status": 400,
+            "response": {"body": response_body},
         },
     })
 
@@ -4192,7 +4134,7 @@ def test_claude_error_enums_are_quota(pd, event_factory, error):
 
 
 def test_opencode_provider_authentication_error_passthrough_is_auth(pd):
-    """APIError name/status int가 아니라 responseBody의 상류 401 enum이 AUTH 근거다."""
+    """오류 type·status 정수가 아니라 응답 본문(`error.response.body`)의 상류 401 enum이 AUTH 근거다."""
     response_body = _json.dumps({
         "type": "error",
         "error": {"type": "authentication_error", "message": "API key is invalid."},
@@ -4209,7 +4151,7 @@ def test_opencode_provider_authentication_error_passthrough_is_auth(pd):
     ],
 )
 def test_opencode_provider_quota_passthrough_is_quota(pd, response_body):
-    """opencode가 responseBody에 전달한 Anthropic enum/메시지를 QUOTA로 분류한다."""
+    """opencode가 응답 본문에 전달한 Anthropic enum/메시지를 QUOTA로 분류한다."""
     event = _opencode_api_error_event(response_body)
     assert delegate_run.classify_infrastructure_failure(_failed_stdout(event)) == delegate_run_rules.FAILURE_CLASS_QUOTA
 
@@ -4796,7 +4738,7 @@ def test_help_documents_classification_coverage_boundary(pd):
     """§help가 3하네스 근거 편입과 opencode 무진단 침묵의 stall 경계를 함께 못박는다."""
     help_text = delegate_cmd.build_arg_parser().format_help()
     assert "codex 실근거와 claude 2.1.220 실측/바이너리 enum" in help_text
-    assert "opencode 1.18.4 provider passthrough 실측" in help_text
+    assert "opencode 2.3.0 provider passthrough 실측" in help_text
     assert "opencode 무진단 연결/fetch 침묵은 첫 이벤트 시간 제한(stall)" in help_text
     # 시간 예산 표기는 하네스별 실예산 — "2×timeout" 같은 거짓 단일 계수 금지(codex R2).
     assert "primary·대체 하네스 각 예산의 합" in help_text

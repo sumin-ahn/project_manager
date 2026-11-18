@@ -117,15 +117,15 @@ def parse_opencode_json(lines) -> tuple[str | None, str | None, int | None]:
       을 잡는다(opencode 가 sid 를 발급 — claude 와 달리 사전지정 불가, 출력 파싱으로 획득).
     - reply: `type:"text"` 이벤트의 `part.text` 를 등장 순서대로 누적(멀티-part 답변 대응).
       reply 가 없으면(text part 0) None.
-    - used_tokens: 마지막 `step_finish` 이벤트의 `part.tokens` 에서 유효한 `total`(양의 정수)을
-      우선하고, 없으면 `input + output + reasoning + cache.read + cache.write`로 대신 계산한다. 이때
-      reasoning을 별도 가산해 보수적 상위집합으로 잡는다. tokens가 없거나 어느 값/cache 구성이
-      비정상이면 None.
-      설치 opencode 1.18.5 바이너리 실측도 total 우선 + cache 합산 대체 계산을 확인했다.
+    - used_tokens: 마지막 `step_finish` 이벤트의 `part.tokens` 다섯 값의 합
+      (`input + output + reasoning + cache.read + cache.write`, opencode 2.x 의 사용량 합과 같은 식).
+      tokens가 없거나 어느 값/cache 구성이 비정상이면 None.
     - 비-JSON / 비-dict 라인은 skip(부분/노이즈 라인에 robust — claude 파서와 동일 정책).
 
-    실측 이벤트 형식(opencode 1.17.6):
+    실측 이벤트 형식(opencode 2.3.0):
       {"type":"text","sessionID":"ses_...","part":{"type":"text","text":"PONG",...}}
+      {"type":"step_finish",...,"part":{"tokens":{"input":100,"output":2,"reasoning":0,
+       "cache":{"read":0,"write":0}},...}}
     """
     import json  # 지연 import — 순수 헬퍼만 쓰는 경로의 import 비용 회피(claude 파서 대칭).
 
@@ -155,23 +155,18 @@ def parse_opencode_json(lines) -> tuple[str | None, str | None, int | None]:
             part = event.get("part")
             tokens = part.get("tokens") if isinstance(part, dict) else None
             if isinstance(tokens, dict):
-                total = tokens.get("total")
-                if isinstance(total, int) and not isinstance(total, bool) and total > 0:
-                    used_tokens = total
+                cache = tokens.get("cache", {})
+                values = [tokens.get(key, 0) for key in ("input", "output", "reasoning")]
+                if isinstance(cache, dict):
+                    values.extend(cache.get(key, 0) for key in ("read", "write"))
                 else:
-                    cache = tokens.get("cache", {})
-                    values = [tokens.get(key, 0) for key in ("input", "output", "reasoning")]
-                    if isinstance(cache, dict):
-                        values.extend(cache.get(key, 0) for key in ("read", "write"))
-                    else:
-                        values.append(None)
-                    # Upstream v1.18.5 근거 파일: session.ts, overflow.ts.
-                    used_tokens = (
-                        sum(values)
-                        if all(isinstance(value, int) and not isinstance(value, bool)
-                               and value >= 0 for value in values)
-                        else None
-                    )
+                    values.append(None)
+                used_tokens = (
+                    sum(values)
+                    if all(isinstance(value, int) and not isinstance(value, bool)
+                           and value >= 0 for value in values)
+                    else None
+                )
             else:
                 used_tokens = None
     reply = "".join(reply_parts) if reply_parts else None
@@ -279,9 +274,10 @@ class ModelSource(NamedTuple):
       · `alias`  — CLI 가 계약한 별칭이 `values` 에 있다(그 CLI `--help` 실측).
       · `live`   — `command` 가 목록을 준다. 산출 형식은 CLI 마다 달라 `parse` 가 **값으로**
                    고른다(하네스 이름 분기 0). 조회 실행은 `model_listing` 하나다. 판독 이름은
-                   `json-slug`(모델 목록만)와 `opencode-verbose`(모델 목록과 모델별 variants)다.
+                   `json-slug`(모델 목록만)와 `opencode-api-model`(모델 목록과 모델별 variants·limit)다.
 
     `value_format`·`how_to_check` 는 사람 안내 문구다(`pm_config` 의 `[m]` 위임 모델 안내).
+    `failure_note` 는 조회 명령이 rc≠0 으로 끝났을 때 사유 앞에 붙이는 고정 문구다(`model_listing`).
     """
 
     kind: str
@@ -290,6 +286,7 @@ class ModelSource(NamedTuple):
     parse: str | None                  # 그 산출을 읽는 방식 이름 (alias 는 None)
     value_format: str
     how_to_check: str
+    failure_note: str                  # 조회 rc≠0 사유 앞에 붙는 고정 문구(없으면 빈 문자열)
 
 
 # 모델 원천 표 — 설정 키 레지스트리의 선택지·`pm-config delegate models`·`[m]` 안내가
@@ -298,15 +295,19 @@ MODEL_SOURCE: dict[str, ModelSource] = {
     # `claude --help` 실측: "Provide an alias for the latest model (e.g. 'fable', 'opus', or
     # 'sonnet') or a model's full name (e.g. 'claude-fable-5')."
     "claude": ModelSource("alias", ("fable", "opus", "sonnet"), None, None,
-                          "별칭 또는 풀네임", "`claude --help` 의 모델 옵션 설명"),
+                          "별칭 또는 풀네임", "`claude --help` 의 모델 옵션 설명", ""),
     # `codex debug models` 가 카탈로그를 JSON 으로 낸다(`{"models":[{"slug":…}]}`). 카탈로그는
     # 바이너리에 번들돼 있어 사실상 로컬 조회다 — 실측 0.34초(cold) · 0.02초(warm).
     "codex": ModelSource("live", (), ("codex", "debug", "models"), "json-slug",
-                         "카탈로그의 slug 또는 풀네임", "`codex debug models`"),
-    # `--verbose` 는 모델마다 머리 줄 `provider/id` 뒤에 모델 객체 JSON 을 낸다. 그 객체의
-    # `variants` 키가 그 모델이 받는 추론 강도다(1.18.5·1.18.34 같은 코드).
-    "opencode": ModelSource("live", (), ("opencode", "models", "--verbose"), "opencode-verbose",
-                            "provider/model", "`opencode models --verbose`"),
+                         "카탈로그의 slug 또는 풀네임", "`codex debug models`", ""),
+    # 2.x 서버 API 의 모델 목록. 모델마다 `providerID`·`id`·`variants`(추론 강도)·`limit` 을 JSON 으로 낸다.
+    # `--standalone` 은 이 조회 전용 서버를 띄웠다 닫는다. 없으면 상주 서비스를 띄워 남기고 그 뒤의
+    # `opencode run` 이 거기 붙는다(2.3.0 실측). 한 번에 약 1.3초.
+    "opencode": ModelSource("live", (), ("opencode", "api", "GET", "/api/model", "--standalone"),
+                            "opencode-api-model", "provider/model",
+                            "`opencode api GET /api/model --standalone`",
+                            # 1.x 는 이 명령에 도움말(로고)만 내고 rc 1 로 끝나 사유만으로는 원인이 보이지 않는다.
+                            " (opencode 2.x 가 있어야 합니다)"),
 }
 
 
@@ -334,12 +335,14 @@ def models_timeout() -> int:
 class ModelListing(NamedTuple):
     """모델 목록 조회 한 번의 결과.
 
-    `variants` 는 모델별 추론 강도를 내는 판독(`opencode-verbose`)만 채운다 — 모델 이름 →
-    variants 키(조회 산출 순서). 별칭 원천과 `json-slug` 판독은 `None` 이다(모델별 값이 없다).
+    `variants`·`limits` 는 모델별 값을 내는 판독(`opencode-api-model`)만 채운다 — 모델 이름 →
+    variants id(조회 산출 순서) · `limit` 객체(context·output, 있으면 input). 별칭 원천과 `json-slug`
+    판독은 `None` 이다(모델별 값이 없다).
     """
 
     models: tuple[str, ...]
     variants: dict[str, tuple[str, ...]] | None
+    limits: dict[str, dict] | None
 
 
 def _parse_json_slug(output: str) -> ModelListing:
@@ -357,43 +360,39 @@ def _parse_json_slug(output: str) -> ModelListing:
         if not isinstance(slug, str) or not slug.strip():
             raise HarnessContractError(f"slug 형식이 아닌 항목 {entry!r}")
         slugs.append(slug)
-    return ModelListing(tuple(slugs), None)
+    return ModelListing(tuple(slugs), None, None)
 
 
-def _parse_opencode_verbose(output: str) -> ModelListing:
-    """`opencode models --verbose` 산출 → 모델 목록과 모델별 variants.
+def _parse_opencode_api_model(output: str) -> ModelListing:
+    """`opencode api GET /api/model --standalone` 산출 → 모델 목록·모델별 variants·모델별 limit.
 
-    형식(실행 파일 판독): 모델마다 머리 줄 `provider/id` 뒤에 `JSON.stringify(모델, null, 2)`.
-    모델 객체는 늘 `variants` 객체를 갖는다(없는 모델은 `{}`). 머리 줄 순서와 variants 키 순서를
-    그대로 지킨다. 형식이 다르면 `HarnessContractError` 다(빈 목록으로 바꾸지 않는다).
+    형식(2.3.0 실측): `{"location": {...}, "data": [{"providerID", "id", "variants": [{"id", ...}],
+    "limit": {"context", "output"[, "input"]}, ...}]}`. 모델 이름은 `providerID/id`(`-m` 이 받는 표기)다.
+    응답 순서를 그대로 지킨다. 형식이 다르면 `HarnessContractError` 다(빈 목록으로 바꾸지 않는다).
     """
-    decoder = json.JSONDecoder()
+    try:
+        document = json.loads(output)
+    except ValueError as exc:
+        raise HarnessContractError(f"JSON 이 아니다 ({exc})") from exc
+    entries = document.get("data") if isinstance(document, dict) else None
+    if not isinstance(entries, list):
+        raise HarnessContractError("`data` 배열이 없다")
     models: list[str] = []
     variants: dict[str, tuple[str, ...]] = {}
-    position = 0
-    length = len(output)
-    while True:
-        while position < length and output[position].isspace():
-            position += 1
-        if position >= length:
-            break
-        line_end = output.find("\n", position)
-        header = output[position:line_end if line_end != -1 else length].strip()
-        if line_end == -1 or "/" not in header or header.startswith("{"):
-            raise HarnessContractError(f"모델 머리 줄 `provider/id` 가 아니다: {header[:80]!r}")
-        position = line_end + 1
-        while position < length and output[position].isspace():
-            position += 1
-        try:
-            model, position = decoder.raw_decode(output, position)
-        except json.JSONDecodeError as exc:
-            raise HarnessContractError(f"{header} 의 모델 객체가 JSON 이 아니다 ({exc})") from exc
-        named = model.get("variants") if isinstance(model, dict) else None
-        if not isinstance(named, dict):
-            raise HarnessContractError(f"{header} 의 모델 객체에 `variants` 객체가 없다")
-        models.append(header)
-        variants[header] = tuple(named)
-    return ModelListing(tuple(models), variants)
+    limits: dict[str, dict] = {}
+    for entry in entries:
+        fields = entry if isinstance(entry, dict) else {}
+        provider, model_id = fields.get("providerID"), fields.get("id")
+        named, limit = fields.get("variants"), fields.get("limit")
+        if (not isinstance(provider, str) or not provider or not isinstance(model_id, str) or not model_id
+                or not isinstance(named, list) or not isinstance(limit, dict)
+                or any(not isinstance(item, dict) or not isinstance(item.get("id"), str) for item in named)):
+            raise HarnessContractError(f"모델 항목 형식이 아니다: {str(entry)[:120]}")
+        name = f"{provider}/{model_id}"
+        models.append(name)
+        variants[name] = tuple(item["id"] for item in named)
+        limits[name] = dict(limit)
+    return ModelListing(tuple(models), variants, limits)
 
 
 def resolve_executable(name: str, env: dict[str, str] | None) -> str:
@@ -422,7 +421,7 @@ def resolve_executable(name: str, env: dict[str, str] | None) -> str:
 # 판독 이름 → 판독 함수. 키는 산출 형식 이름이다(하네스 표가 아니다 — `MODEL_SOURCE.parse` 가 고른다).
 _MODEL_LISTING_PARSERS = {
     "json-slug": _parse_json_slug,
-    "opencode-verbose": _parse_opencode_verbose,
+    "opencode-api-model": _parse_opencode_api_model,
 }
 
 # 조회 기억 — 한 프로세스 안에서 같은 조건의 조회를 다시 실행하지 않는다. 키는 (명령, cwd 절대경로,
@@ -439,7 +438,7 @@ def model_listing(source: ModelSource, *, cwd: Path | str, env: dict[str, str]) 
     모델 0개는 전부 `HarnessContractError` 다. 빈 목록이나 기본값으로 바꾸지 않는다.
     """
     if source.kind == "alias":
-        return ModelListing(tuple(source.values), None)
+        return ModelListing(tuple(source.values), None, None)
     if source.kind != "live":
         raise HarnessContractError(
             f"모르는 모델 원천 kind {source.kind!r} — MODEL_SOURCE 선언과 이 판정이 갈렸다.")
@@ -474,7 +473,7 @@ def model_listing(source: ModelSource, *, cwd: Path | str, env: dict[str, str]) 
         raise HarnessContractError(f"{shown} 출력 판독 실패 — UTF-8 이 아니다 ({exc})") from exc
     if result.returncode != 0:
         raise HarnessContractError(
-            f"{shown} 실패 rc={result.returncode}: {(result.stderr or '').strip()[:200]}")
+            f"{shown} 실패 rc={result.returncode}{source.failure_note}: {(result.stderr or '').strip()[:200]}")
     try:
         listing = parser(result.stdout or "")
     except HarnessContractError as exc:
@@ -533,8 +532,9 @@ def opencode_runtime_role_config(role: str) -> str:
     allowlisting. Incoming content is intentionally not merged or inherited: it is an arbitrary runtime
     override surface and may contain plugins, commands, or secrets. Normal user/project config files still
     load through the separately allowlisted ``OPENCODE_CONFIG``/``OPENCODE_CONFIG_DIR`` locations; this
-    highest-precedence fragment only pins the delegated role's identity, its permissions, and
-    how an automatically rejected permission request is handled.
+    highest-precedence fragment only pins the delegated role's identity and its permissions. It reaches
+    the role only through the private server that ``--standalone`` starts (a run attached to a running
+    background service uses the service's configuration).
     """
     perm_kind(role)  # shared role allowlist and wording
     # ``edit`` is allowed for every role, researcher included: all participating roles record
@@ -564,12 +564,6 @@ def opencode_runtime_role_config(role: str) -> str:
                 "permission": permission,
             },
         },
-        # Non-interactive ``opencode run`` auto-rejects every ``ask`` request, and on the resulting
-        # RejectedError it ends the whole run unless this flag is true (OpenCode 1.18.34 failToolCall).
-        # With it the rejection goes back to the model as a tool error and the run continues, like
-        # claude ``-p`` and codex ``-a never``. It changes no allow/deny/ask decision. The key is
-        # experimental: re-measure this behaviour whenever the pinned OpenCode version changes.
-        "experimental": {"continue_loop_on_deny": True},
     }
     return json.dumps(config, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -687,8 +681,8 @@ def validate_reasoning(
 ) -> str | None:
     """실행 직전 확인 — reasoning 이 그 하네스·모델의 허용집합 원소인가. 미지정=None(조회 없음).
 
-    허용집합은 `reasoning_allowed` 가 정한다(실행과 같은 cwd·env 로 조회). 밖이면 fail-loud 다 —
-    하네스는 허용집합 밖 값을 오류 없이 버리므로 조용한 무시를 호출 전에 막는다."""
+    허용집합은 `reasoning_allowed` 가 정한다(실행과 같은 cwd·env 로 조회). 밖이면 fail-loud 다.
+    허용집합 밖 값은 하네스마다 버림·경고·실행 실패로 다르게 다뤄지므로 실행 전에 멈춘다."""
     value = normalize_reasoning(reasoning)
     if value is None:
         return None
@@ -696,8 +690,9 @@ def validate_reasoning(
     if value not in allowed:
         known = ", ".join(allowed) if allowed else "없음"
         raise HarnessContractError(
-            f"reasoning {value!r} 은 {harness} {model} 허용집합 ({known}) 밖 — 하네스는 허용집합 "
-            "밖 값을 오류 없이 버리므로 멈춘다. 추론 강도를 비우거나 허용집합 안 값으로 고친다."
+            f"reasoning {value!r} 은 {harness} {model} 허용집합 ({known}) 밖 — 허용집합 밖 값은 "
+            "하네스마다 버림·경고·실행 실패로 다르게 다뤄지므로 실행 전에 멈춘다. 추론 강도를 비우거나 "
+            "허용집합 안 값으로 고친다."
         )
     return value
 
@@ -824,27 +819,29 @@ def build_claude_argv(model: str, reasoning: str | None, role: str,
 
 
 def build_opencode_argv(
-    model: str, reasoning: str | None, role: str, cwd: str, prompt_file: str,
+    model: str, reasoning: str | None, role: str, prompt_file: str,
 ) -> list[str]:
-    """opencode argv. 프롬프트는 `--file`(실존 인터페이스·길이/ps 노출 회피)·cwd 는 `--dir`
-    로 핀하고, `--agent <role>`로 네이티브와 같은 custom 역할 정의를 선택한다."""
+    """opencode argv. 프롬프트는 `--file`(실존 인터페이스·길이/ps 노출 회피), `--agent <role>`로
+    네이티브와 같은 custom 역할 정의를 선택한다. 작업 폴더는 실행 인자가 아니라 자식 프로세스의 cwd 다.
+
+    `--standalone` 은 이 실행 전용 서버를 띄운다. 떠 있는 상주 서비스에 붙으면 그 서비스의 설정을 써서
+    `OPENCODE_CONFIG_CONTENT` 의 역할 정의가 빠진다(2.3.0 실측: `Agent not found`). 추론 강도는 모델 지정
+    `provider/model#강도` 에 붙는다(모델 없는 추론 강도는 `validate_reasoning` 이 먼저 거부한다)."""
     perm_kind(role)  # 공용 역할 allowlist 검증(예외 문구 단일 진실).
     agent = OPENCODE_AGENT[role]
     argv = ["opencode", "run", OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
-            "--agent", agent, "--format", "json", "--dir", str(cwd)]
+            "--agent", agent, "--format", "json", "--standalone"]
     if model:
-        argv += ["-m", model]
-    if reasoning:
-        argv += ["--variant", reasoning]
+        argv += ["-m", f"{model}#{reasoning}" if reasoning else model]
     return argv
 
 
 def assert_opencode_prompt_in_cwd(cwd: str | Path, prompt_file: str | Path) -> None:
-    """opencode ``--file`` 이 ``--dir`` sandbox의 실제 하위 경로인지 단언한다.
+    """opencode ``--file`` 프롬프트가 작업 폴더(sandbox)의 실제 하위 경로인지 단언한다.
 
     argv 빌더 자체는 추가 리뷰어의 표시용 placeholder도 조립하므로 순수 함수로 둔다. 실제 파일을
     넘기는 호출부가 이 가드를 직전에 호출한다. 양쪽 경로를 resolve해 실제 containment를 판정하며,
-    해소 자체가 실패하면 공용 계약 예외로 번역한다. 따라서 ``--dir`` 안의 symlink가 바깥 파일을
+    해소 자체가 실패하면 공용 계약 예외로 번역한다. 따라서 작업 폴더 안의 symlink가 바깥 파일을
     가리키는 구성도 거부하며, 파일 경로가 sandbox 루트와 같은 값인 구성도 하위로 인정하지 않는다.
     """
     try:
@@ -852,20 +849,20 @@ def assert_opencode_prompt_in_cwd(cwd: str | Path, prompt_file: str | Path) -> N
         attached = Path(prompt_file).resolve()
     except (OSError, RuntimeError) as exc:
         raise HarnessContractError(
-            "opencode --file/--dir 실경로 해소 실패 — "
-            f"--file={prompt_file} · --dir={cwd} · {type(exc).__name__}: {exc}"
+            "opencode --file/작업 폴더 실경로 해소 실패 — "
+            f"--file={prompt_file} · 작업 폴더={cwd} · {type(exc).__name__}: {exc}"
         ) from exc
     try:
         relative = attached.relative_to(sandbox)
     except ValueError as exc:
         raise HarnessContractError(
-            "opencode 전달 프롬프트가 --dir sandbox 밖입니다 — "
-            f"--file={attached} · --dir={sandbox}"
+            "opencode 전달 프롬프트가 작업 폴더 sandbox 밖입니다 — "
+            f"--file={attached} · 작업 폴더={sandbox}"
         ) from exc
     if not relative.parts:
         raise HarnessContractError(
-            "opencode 전달 프롬프트는 --dir sandbox의 파일 하위 경로여야 합니다 — "
-            f"--file={attached} · --dir={sandbox}"
+            "opencode 전달 프롬프트는 작업 폴더 sandbox의 파일 하위 경로여야 합니다 — "
+            f"--file={attached} · 작업 폴더={sandbox}"
         )
 
 

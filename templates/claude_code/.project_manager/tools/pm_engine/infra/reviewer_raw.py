@@ -80,7 +80,6 @@ def _structured_transport(
     if target.harness != "opencode":
         yield reviewer_target._structured_reviewer_argv(
             target.harness, target.model, target.reasoning,
-            cwd=str(cwd) if cwd is not None else reviewer_result.REVIEWER_CWD_PLACEHOLDER,
             prompt_file=reviewer_result.REVIEWER_PROMPT_FILE_PLACEHOLDER,
         ), None
         return
@@ -99,9 +98,7 @@ def _structured_transport(
             if artifact.exists():
                 review_rounds._restrict_to_owner(artifact)
         yield reviewer_target._structured_reviewer_argv(
-            target.harness, target.model, target.reasoning,
-            cwd=str(prompt_file.sandbox),
-            prompt_file=str(prompt_file),
+            target.harness, target.model, target.reasoning, prompt_file=str(prompt_file),
         ), ""
     finally:
         delegate_temp._cleanup_attempt_transport(prompt_file)

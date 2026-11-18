@@ -27,7 +27,7 @@ _READ_TMP_FD_SUPPORTED = (
 
 
 def _assert_opencode_transport_path(cwd: Path, prompt_file: Path) -> None:
-    """공용 ``--file``/``--dir`` containment 계약을 위임 쪽 예외로 번역한다."""
+    """공용 ``--file``/작업 폴더 containment 계약을 위임 쪽 예외로 번역한다."""
     try:
         contract.assert_opencode_prompt_in_cwd(cwd, prompt_file)
     except contract.HarnessContractError as exc:
@@ -658,17 +658,16 @@ def _save_opencode_transport_prompt(
     ``--cwd`` 디렉터리도 같은 위치를 만들 수 있다. ``.project_manager``/``.local`` 중간 경로가
     sandbox 밖 symlink인 경우에는 mkdir/write 전에 공용 containment 가드로 거부한다.
     """
-    # argv 문자열은 사용자 cwd의 미해소 절대경로를 보존한다. --dir과 --file이 같은 lexical
-    # prefix를 공유해야 opencode의 문자열 containment가 symlink cwd를 auto-reject하지 않는다.
+    # argv 문자열은 사용자 cwd의 미해소 절대경로를 보존한다(실행 위치와 --file 이 같은 lexical prefix).
     sandbox = Path(os.path.abspath(cwd))
     try:
         resolved_sandbox = sandbox.resolve()
     except (OSError, RuntimeError) as exc:
         raise delegate_errors.DelegateError(
-            f"opencode --dir 실경로 해소 실패: {sandbox}: {type(exc).__name__}: {exc}"
+            f"opencode 작업 폴더 실경로 해소 실패: {sandbox}: {type(exc).__name__}: {exc}"
         ) from exc
     if not resolved_sandbox.is_dir():
-        raise delegate_errors.DelegateError(f"opencode --dir 디렉터리가 없음: {sandbox}")
+        raise delegate_errors.DelegateError(f"opencode 작업 폴더가 없음: {sandbox}")
     attempt_id = f"pm_delegate_{os.getpid()}_{uuid.uuid4().hex}"
     dest = sandbox / _OPENCODE_TRANSPORT_REL_DIR / attempt_id / "prompt.md"
     _assert_opencode_transport_path(sandbox, dest)

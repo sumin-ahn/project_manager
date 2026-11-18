@@ -1307,7 +1307,7 @@ def test_reasoning_allowed_is_read_from_sibling_pm_relay():
 
 
 # ── opencode 카드 `variant` — 그 모델의 variants 안 값만 싣는다 (T-0946) ─────────────────────────
-# 허용집합은 렌더 프로세스 env 의 모델 목록 조회(`opencode models --verbose`)가 정한다. 가짜 실행
+# 허용집합은 렌더 프로세스 env 의 모델 목록 조회(`opencode api GET /api/model --standalone`)가 정한다. 가짜 실행
 # 파일이 실제 출력 형식을 내고, PATH 앞에 둔다.
 from _fake_opencode import OLLAMA_LISTING, calls, install_fake_opencode, path_with  # noqa: E402
 from _win_skip import posix_bash_supported  # noqa: E402
@@ -1350,7 +1350,7 @@ def test_opencode_card_renders_variant_from_model_variants(render_home, pm_rende
     lines = out.splitlines()
     assert lines[3] == 'model: "ollama/ornith1.5:35b-a3b"'
     assert lines[4] == 'variant: "high"'
-    assert [args for _cwd, args in calls(fake_opencode_path)] == ["models --verbose"]
+    assert [args for _cwd, args in calls(fake_opencode_path)] == ["api GET /api/model --standalone"]
 
 
 @_needs_posix_fake

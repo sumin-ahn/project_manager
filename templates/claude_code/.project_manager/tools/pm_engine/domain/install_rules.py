@@ -162,7 +162,7 @@ FREE_FORM_TOKENS = (
 
 # opencode 어댑터 고유 harness 설정값 — operational/자유서술 어디에도 안 속하는 모델 ID.
 # `.opencode/agents/*.md` 의 `model:` 필드로 등장.
-# *아니라* `opencode models` 결정적 조회로 해소한다(resolve_opencode_model) — 따라서 fill
+# *아니라* opencode 모델 목록 결정적 조회로 해소한다(resolve_opencode_model) — 따라서 fill
 # 후보에서 분리됐다(중복·환각 제거). opencode 트리가 복사됐을 때만 해소 단계를 탄다.
 OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
 
@@ -182,7 +182,7 @@ LIVE_HARNESS_ENV = "PM_IMPORT_LIVE_HARNESS"
 # claude·codex 는 표준 입력(전문을 쓰고 닫아 EOF), opencode 는 대상 폴더 안 프롬프트 파일(`--file`).
 # 여러 줄 프롬프트를 실행 인자에 싣지 않는다: Windows 에서 실행 파일이 npm 셈(`.cmd`)이면 cmd.exe 가
 # 인자를 해석해 첫 줄 뒤를 조용히 버린다(VM 실측). -s workspace-write·--skip-git-repo-check·
-# -C <dest>·--dir <dest> 는 _build_runner_argv 가 붙인다. codex 는 `model` 생략=사용자 config 상속.
+# -C <dest>·--standalone 은 _build_runner_argv 가 붙인다. codex 는 `model` 생략=사용자 config 상속.
 CLAUDE_FILL_CMD = ("claude", "-p")
 
 

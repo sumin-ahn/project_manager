@@ -60,11 +60,11 @@ PM_PLAYBOOK_LOCAL_RELPATH = Path(".project_manager") / "wiki" / "pm_playbook.loc
 # ── opencode 모델 결정적 해소 단계 (LLM 아님) ──────────────────────
 # board init·conf sync 직후·fill *이전* 의 결정적 단계(sync_local_conf 와 같은 결). opencode
 # 어댑터 token({{OPENCODE_PRO_MODEL}})이 이번 복사본에 잔존할 때만 동작한다.
-# 해소 순서: 1) --opencode-model 명시 → 치환  2) 없고 stdin tty → `opencode models` 번호목록·선택
+# 해소 순서: 1) --opencode-model 명시 → 치환  2) 없고 stdin tty → opencode 모델 목록 번호목록·선택
 # → 치환  3) 없고 비-tty 또는 opencode 부재 → 치환 안 함·TODO 마커(가용목록 인라인)+stderr 경고.
-# `opencode models` 가 실제 가용 모델의 단일 진실 — LLM 추측(fill) 대신 결정적 조회를 쓴다.
+# opencode 모델 목록 조회(`opencode api GET /api/model --standalone`)가 실제 가용 모델의 단일 진실 — LLM 추측(fill) 대신 결정적 조회를 쓴다.
 
-# `opencode models` 조회 교체 지점 — `()` → (성공 여부, provider/model 목록). 테스트가 stub 주입.
+# opencode 모델 목록 조회 교체 지점 — `()` → (성공 여부, provider/model 목록). 테스트가 stub 주입.
 ModelsRunner = Callable[[], "tuple[bool, list[str]]"]
 
 
@@ -76,7 +76,7 @@ class ModelResolveResult:
       path      : 'flag' | 'interactive' | 'todo' | 'inactive' — 해소 경로.
       model     : 치환에 쓴 모델 ID (PROVIDER/MODEL) 또는 None(미치환).
       changed   : {{OPENCODE_PRO_MODEL}} 을 치환한 파일 수 (0 = 미치환·TODO 대체 동작).
-      available : `opencode models` 조회 성공 시 가용 모델 목록 (실패/미조회 시 빈 리스트).
+      available : opencode 모델 목록 조회 성공 시 가용 모델 목록 (실패/미조회 시 빈 리스트).
       tty       : 해소 시점 stdin 이 tty 였는가 (대화형 가능 여부).
       todos     : TODO 대체 동작에서 마커를 추가한 토큰 목록.
       note      : 사람 대상 메모 (경고·경로 사유).
@@ -182,7 +182,7 @@ def _substitute_model_token(
 
 
 def _prompt_model_choice(models: list[str], stdin) -> str | None:
-    """`opencode models` 번호 목록을 출력하고 stdin 에서 선택을 읽어 모델 ID 를 반환.
+    """opencode 모델 목록 번호 목록을 출력하고 stdin 에서 선택을 읽어 모델 ID 를 반환.
 
     1-based 번호 목록을 stdout 에 출력하고 stdin 한 줄을 읽는다. 유효한 번호면 해당 모델,
     빈 입력·범위 밖·비숫자·EOF 면 None(미선택 → 호출자가 TODO 대체 동작). 테스트는 io.StringIO 를
@@ -287,11 +287,11 @@ def resolve_opencode_model(
     해소 순서:
       1) model_arg 명시 → 치환. (조회 가능하면 목록 대조해 *경고만*; 목록에 없어도 사용자 의도
          존중·치환 — 회사 사설 모델 등.)
-      2) 없고 stdin tty → `opencode models` 번호목록 출력·선택 입력 → 치환. (선택 안 하면 TODO 대체 동작.)
+      2) 없고 stdin tty → opencode 모델 목록 번호목록 출력·선택 입력 → 치환. (선택 안 하면 TODO 대체 동작.)
       3) 없고 비-tty(CI·파이프) 또는 opencode 바이너리 부재 → 치환 안 함·TODO 마커(조회 성공 시
          가용목록 인라인)+stderr 경고.
 
-    models_runner: `opencode models` 조회 교체 지점 — 테스트 stub 주입(라이브 CLI 미실행). None 이면
+    models_runner: opencode 모델 목록 조회 교체 지점 — 테스트 stub 주입(라이브 CLI 미실행). None 이면
                    실 _real_models_runner. stdin: 대화형 선택 입력 교체 지점 — None 이면 sys.stdin.
     치환은 substitute_placeholders 와 동일한 copied_relpaths 비파괴 범위·_should_substitute 규칙.
     """
@@ -316,7 +316,7 @@ def resolve_opencode_model(
 
     # 1) --opencode-model 명시 → 치환(사용자 의도 우선). 조회 가능하면 목록 대조 경고만.
     if model_arg:
-        # 명시값을 **먼저 확정**(치환) — 외부 `opencode models` 조회가 명시-플래그 경로의 import
+        # 명시값을 **먼저 확정**(치환) — 외부 opencode 모델 목록 조회가 명시-플래그 경로의 import
         # 를 막지 않게(codex suggestion). 목록 대조는 그 *뒤* best-effort 경고만(짧은 timeout·
         # fail-soft — 조회 실패/지연이 치환 결과를 바꾸지 않는다).
         changed = _substitute_model_token(dest_root, model_arg, copied_relpaths,
@@ -324,7 +324,7 @@ def resolve_opencode_model(
         ok, available = runner()
         if ok and available and model_arg not in available:
             print(
-                f"경고: --opencode-model '{model_arg}' 가 `opencode models` 가용 목록에 없습니다 "
+                f"경고: --opencode-model '{model_arg}' 가 opencode 모델 가용 목록에 없습니다 "
                 f"(사용자 의도 존중·그대로 치환됨). 가용: {', '.join(available)}.",
                 file=sys.stderr,
             )
@@ -334,7 +334,7 @@ def resolve_opencode_model(
             note=f"--opencode-model 명시값으로 치환({changed} 파일).",
         )
 
-    # 플래그 없음 → `opencode models` 조회(2·3 공통 전제).
+    # 플래그 없음 → opencode 모델 목록 조회(2·3 공통 전제).
     ok, available = runner()
 
     # 2) stdin tty + 조회 성공 → 번호목록·대화형 선택 → 치환.
@@ -363,7 +363,7 @@ def resolve_opencode_model(
     todos = _mark_model_todos(home, dest_root, copied_relpaths, available if ok else [],
                               root_identity=root_identity)
     if not ok:
-        reason = "opencode 바이너리 부재 또는 `opencode models` 조회 실패"
+        reason = "opencode 바이너리 부재 또는 opencode 모델 목록 조회 실패"
     elif not is_tty:
         reason = "비대화형(CI·파이프) — 블로킹 프롬프트 회피"
     else:
@@ -512,7 +512,7 @@ def _save_fill_failure_output(dest_root: Path, harness: str, output: str) -> Pat
 def _write_fill_private_file(dest_root: Path, prefix: str, suffix: str, text: str) -> Path:
     """`<dest>/.project_manager/.local/fill/<prefix><무작위><suffix>` 에 0600·O_EXCL 로 쓴다(fill 실패 원문·
     opencode 프롬프트 파일). 경로 조상이 repo 밖을 가리키거나 부모가 symlink 면 `OSError` 다. 반환 경로는
-    `dest_root` 기준 lexical 경로다(opencode `--dir <dest>` 와 같은 접두)."""
+    `dest_root` 기준 lexical 경로다(opencode 실행 위치 `<dest>` 와 같은 접두)."""
     dest_root = Path(dest_root)
     repo_root = dest_root.resolve(strict=True)
     if not repo_root.is_dir():
@@ -677,12 +677,13 @@ def _build_runner_argv(harness: str, dest_root: Path, prompt_file: Path | None) 
     """하니스별 헤드리스 구동 명령 조립(runner 매핑·명시 등록). 프롬프트는 실행 인자에 없다.
 
       claude   → `claude -p` (프롬프트 = 표준 입력)
-      opencode → `opencode run "<첨부 안내>" --file <prompt_file> --format json --dir <dest>`
+      opencode → `opencode run "<첨부 안내>" --file <prompt_file> --format json --standalone`
+                 (실행 위치 = `<dest>`, 자식 cwd)
                  (cross 위임과 같은 `--file` 전달·안내 문구는 `contract` 의 한 줄 상수)
       codex    → `codex exec --json -s workspace-write --skip-git-repo-check -C <dest>` (표준 입력)
 
     `prompt_file` 은 `--file` 전달 하네스에 run_fill 이 `dest_root` 안에 쓴 프롬프트 파일이다(opencode
-    `--dir` 하위). 표준 입력 전달 하네스는 None 이다.
+    실행 위치 하위). 표준 입력 전달 하네스는 None 이다.
 
     미지원 harness 는 **fail-loud**(ValueError). 과거 codex 가 이 매핑에 없어 조용히 `claude -p`
     를 대신 써 *잘못된 바이너리*를 호출하고 출력만 harness=codex 로 오표기하던 클래스를 닫는다 —
@@ -691,7 +692,7 @@ def _build_runner_argv(harness: str, dest_root: Path, prompt_file: Path | None) 
         return [*install_rules.CLAUDE_FILL_CMD]
     if harness == "opencode":
         return [*install_rules.OPENCODE_FILL_CMD, contract.OPENCODE_ATTACHED_MSG, "--file", str(prompt_file),
-                "--format", "json", "--dir", str(dest_root)]
+                "--format", "json", "--standalone"]
     if harness == "codex":
         # workdir 핀(codex 는 -C 로 작업 디렉토리 고정).
         return [*install_rules.CODEX_FILL_CMD, "--json", "-s", "workspace-write", "--skip-git-repo-check",
@@ -832,7 +833,7 @@ def _fill_targets(dest_root: Path, copied_relpaths: set[Path] | None = None,
     (직접 호출용 — COPY_EXCLUDE_DIR_NAMES 제외).
 
     {{OPENCODE_PRO_MODEL}} 는 LLM fill 후보가 *아니다* — resolve_opencode_model 의
-    결정적 `opencode models` 조회가 전담한다(환각·미가용 모델 추측 제거). 여기서는 자유서술
+    결정적 opencode 모델 목록 조회가 전담한다(환각·미가용 모델 추측 제거). 여기서는 자유서술
     3종(FREE_FORM_TOKENS)만 본다.
     """
     scan = _resolve_fill_scope(dest_root, copied_relpaths)
@@ -1038,7 +1039,7 @@ def run_fill(
         )
 
     # 프롬프트 전달 방식은 FILL_DRIVER_BY_CMD 선언이 정한다. `--file` 전달이면 대상 폴더 안
-    # (opencode `--dir` 하위·gitignore 된 `.local/fill`)에 프롬프트 파일을 쓰고 실행 뒤 지운다.
+    # (opencode 실행 위치 하위·gitignore 된 `.local/fill`)에 프롬프트 파일을 쓰고 실행 뒤 지운다.
     prompt_transport = next(
         driver[2] for driver in install_rules.FILL_DRIVER_BY_CMD.values() if driver[0] == harness)
     prompt_file = (

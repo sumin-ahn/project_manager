@@ -13,11 +13,21 @@
 - OpenCode ctx 안내는 단계 끝 이벤트(`session.step.ended`)의 토큰(입력·출력·추론·캐시 합)과 단계 시작 이벤트(`session.step.started`)의 모델로 판정하고, 압축은 `session.compaction.ended` 로 본다. 이벤트가 늦게 닿아 안내는 그 단계 뒤 두 번째 모델 호출에 실릴 수 있다.
 - opencode 2.x 서버 플러그인에는 알림 창(toast)이 없어 가드 플러그인의 알림 창 표시를 지웠다. ctx 구간 안내·압축 안내·`[git-check/warn]`·`[git-check/허용]` 은 지금처럼 다음 모델 호출의 시스템 문구로 나간다. 알림 창으로만 보이던 압축 한도 기록 알림(`[ctx-budget] …`, 기록 없음·모델 바뀜)은 같은 문구를 세션에서 한 번 시스템 문구로 싣는다.
 - 엔진 판정의 파일 쓰기·패치 도구 표가 opencode 2.x 이름과 키(`write`·`edit` 의 `path`, `patch` 의 `patchText`)를 쓰고, 이미지 파일을 쓰는 실험 도구 `experimental_image_generate` 의 `path` 도 같은 쓰기 대상으로 판정한다. 패치 머리 줄은 opencode 2.x 처럼 앞의 공백·탭을 허용하고 경로 끝의 공백·CR 을 빼고 읽는다. Codex `apply_patch` 는 그대로다. 엔진 파일만 바뀌므로 이미 설치한 곳은 갱신(`pm_update.py`)으로 반영된다.
+- OpenCode 는 2.x 만 지원한다(2.3.0 에서 확인). 엔진이 opencode 를 띄우는 길(다른 하네스에서 opencode 로의 위임, 추가 리뷰어, relay 드라이버, 설치 때 자유서술 채움)을 2.x 실행 명령으로 바꿨다. 2.x 의 `opencode run` 에는 `--dir`·`--variant` 가 없어 이 길들이 모두 `Unrecognized flag` 로 끝났다. 이제 작업 폴더는 자식 프로세스의 작업 폴더와 `PWD` 로 주고, 추론 강도는 `-m <공급자/모델>#<강도>` 로 주며, 모든 실행을 그 실행만의 서버(`--standalone`)로 돌린다. 떠 있는 opencode 상주 서비스에 붙어 위임 역할 정의가 빠지던(`Agent not found`) 경우도 함께 없어졌다.
+- relay 드라이버가 세션을 이어 하기 전에 그 세션이 있는지 opencode 에 묻는다(`opencode api GET /api/session/<세션 ID> --standalone`). opencode 2.x 는 없는 세션 ID 로 이어 하면 그 ID 로 새 세션을 만들어, 사라진 세션의 대화가 알림 없이 처음부터 다시 시작됐다. 이제 세션이 없으면 턴을 보내지 않고 오류로 멈춘다.
+- opencode 턴의 사용 토큰은 단계 끝 이벤트의 입력·출력·추론·캐시 읽기·캐시 쓰기를 더해 센다. 2.x 출력에는 합계 값이 없다.
+- 모델 목록(`pm_config.py delegate models`)·추론 강도 확인·설치 때 모델 해소·사용 한도 반영이 opencode 2.x 의 모델 조회(`opencode api GET /api/model --standalone`)를 쓴다. 2.x 에는 `opencode models --verbose` 와 모델 목록 캐시 `models.json` 이 없어 모델 목록 조회가 멈추고 opencode 사용 한도를 반영하지 못했다.
+- opencode 모델의 가용 한도는 opencode 모델 목록이 내는 그 모델의 한도로 정한다. 가용 한도 = min(input, context − 출력 예약)이고 출력 예약은 min(limit.output, 256000)(2.x 의 출력 상한)이다. 이 조회는 프로젝트 폴더에서 opencode 의 프로젝트 설정 찾기를 끄고(`OPENCODE_DISABLE_PROJECT_CONFIG=1`) 반영이 쓴 `limit.input` 을 뺀 프로젝트 설정만 실어 하므로, 지난 반영 값이 다음 계산에 돌아오지 않는다. Ollama 서버에 창 크기를 직접 묻던 조회는 지웠다. 설정에 `limit.context` 가 없는 모델은 opencode 가 쓰는 값(목록 값, 목록에 없는 모델은 창 200000·출력 32000)으로 계산한다. 목록의 한도가 0 이면 반영을 멈추고 그 모델의 `limit.context`·`limit.output` 을 설정에 적으라고 알린다.
+- 사용 한도 반영이 opencode 설정 파일에 쓰는 키는 모델마다 `limit.input` 과 최상위 `compaction.reserved` 둘이다. 전에 반영이 쓴 `limit.context`·`limit.output` 은 지우지 않으며 사용자 값으로 읽는다.
+- opencode 전역 설정 폴더는 `OPENCODE_CONFIG_DIR` 이 있으면 그 폴더이고, 전역 설정 파일은 `opencode.json`·`opencode.jsonc` 둘이다. opencode 모델 목록에 없는 대상 모델은 사용 한도 대상에서 빼고 "opencode 모델 목록에 없음" 으로 알린다.
+- opencode 를 쓰는 설치·갱신·`pm_config.py apply` 는 PATH 에 opencode 2.x 가 있어야 한다. opencode 가 없거나 1.x 면 사용 한도 반영 단계에서 멈춘다. 모델 조회 명령이 실패하면 사유 앞에 `(opencode 2.x 가 있어야 합니다)` 가 붙는다(1.x 는 이 명령에 도움말만 내고 끝나 사유만으로는 원인이 보이지 않는다). 이미 설치한 곳은 opencode 를 2.x(npm 패키지 `@opencode/cli`)로 올린 뒤 갱신(`pm_update.py`, 관리자 앱 [적용])한다. 엔진 파일과 relay 드라이버(`.opencode/pm_orch_opencode.py`)는 갱신으로 바뀐다.
 
 ### Removed
 
 - OpenCode safe-write 플러그인의 진입 파일(`.opencode/plugins/safe-write.js`)을 출하에서 뺐다. opencode 2.x 가 이 파일을 싣지 못해 적재 오류를 냈다. `safe_write` 도구는 더 제공되지 않는다. 이미 설치한 곳은 갱신(`pm_update.py`, 관리자 앱 [적용])이 이 파일을 `.pm_import_backups/<날짜>/` 아래로 옮긴다. `.opencode/lib/safe-write-core.cjs` 는 남지만 쓰이지 않는다.
 - OpenCode 어댑터의 stall-watchdog 플러그인(`.opencode/plugins/stall-watchdog.js`·`.opencode/lib/stall-watchdog-core.cjs`)을 지웠다. 세션이 쉬는 상태(`session.idle`)가 될 때 할 일을 남긴 채 턴을 끝낸 것 같다고 판단하면 `[stall-watchdog]` 로 시작하는 안내 문구를 세션에 넣던 플러그인으로, 제대로 동작하지 않고 불편만 줘서 지웠다. 이미 설치한 곳은 갱신(`pm_update.py`, 관리자 앱 [적용])이 두 파일을 `.pm_import_backups/<날짜>/` 아래로 옮긴다. 손으로 고친 사본도 옮기며 원래 내용은 그 백업에 남는다. 실행 중인 OpenCode 는 다시 띄워야 플러그인이 빠진다. 이 플러그인만 읽던 환경 변수 `PM_STALL_WATCHDOG_MAX_CONSEC`·`PM_STALL_WATCHDOG_MAX_TOTAL`·`PM_STALL_WATCHDOG_DISABLED` 는 더 쓰이지 않고, 플러그인이 상태를 적던 `.project_manager/.local/stall-watchdog/` 폴더는 지워도 된다. 위임 실행이 첫 출력 없이 멈추면 끊고 다시 띄우는 엔진의 감시(`PM_OC_FIRST_EVENT_TIMEOUT`·`PM_OC_STALL_RETRIES`)는 그대로다.
+- opencode 런타임 역할 설정의 `experimental.continue_loop_on_deny` 를 지웠다. 2.x 는 묻는 권한을 자동으로 거부한 뒤에도 실행을 잇는다.
+- 1.x 용 opencode 조회 경로(`opencode models --verbose` 판독, 모델 목록 캐시 `models.json`, Ollama `/api/show` 조회, 공급자 연결 추정, 전역 `config.json`, 출력 상한 환경 변수 `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX`)를 지웠다.
 
 ### Fixed
 

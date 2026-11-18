@@ -454,8 +454,8 @@ def test_resolution_failure_precedes_every_side_effect(
     ]),
         ("opencode", "zai/glm-4.6", "medium", [
             "opencode", "run", "<msg>", "--file", "<prompt-file>",
-            "--agent", "code-reviewer", "--format", "json", "--dir", "<review-cwd>",
-            "-m", "zai/glm-4.6", "--variant", "medium",
+            "--agent", "code-reviewer", "--format", "json", "--standalone",
+            "-m", "zai/glm-4.6#medium",
         ]),
 ])
 def test_structured_argv_pins_model_and_reasoning(
@@ -464,9 +464,7 @@ def test_structured_argv_pins_model_and_reasoning(
     expected = [contract.OPENCODE_ATTACHED_MSG if token == "<msg>" else token
                 for token in expected]
     argv = reviewer_target._structured_reviewer_argv(
-        harness, model, reasoning,
-        cwd=reviewer_result.REVIEWER_CWD_PLACEHOLDER,
-        prompt_file=reviewer_result.REVIEWER_PROMPT_FILE_PLACEHOLDER,
+        harness, model, reasoning, prompt_file=reviewer_result.REVIEWER_PROMPT_FILE_PLACEHOLDER,
     )
     assert argv == expected
     # 해소 결과의 `command` 는 이 argv 를 그대로 렌더한 문자열이다(세 출력 공통 정체).
@@ -963,13 +961,14 @@ def test_structured_provenance_is_one_string_across_four_surfaces(
 
 def test_dry_run_and_execution_render_the_same_command_for_opencode_placeholders(
         external, monkeypatch, tmp_path, capsys):
-    """실행 시점에만 정해지는 경로(거울 cwd·프롬프트 파일)는 세 출력이 같은 자리표시자로 말한다."""
+    """실행 시점에만 정해지는 경로(프롬프트 파일)는 세 출력이 같은 자리표시자로 말한다. 작업 폴더는
+    실행 인자가 아니라 자식 cwd 라 정체 문자열에 없다."""
     repo = _repo(tmp_path / "repo", _conf("opencode", "zai/glm-4.6", None))
     reviewer = _FakeReviewer(stdout=_wire("opencode"))
     _wire_main(external, monkeypatch, repo, reviewer)
     target = reviewer_target.resolve_reviewer_target(conf_store.local_config(pm_paths.home_at(repo)))
-    assert reviewer_result.REVIEWER_CWD_PLACEHOLDER in target.command
     assert reviewer_result.REVIEWER_PROMPT_FILE_PLACEHOLDER in target.command
+    assert "--dir" not in target.command and "<review-cwd>" not in target.command
 
     assert external.main(["--paths", "x.py", "--no-review-ticket"]) == 0
     capsys.readouterr()
@@ -978,8 +977,7 @@ def test_dry_run_and_execution_render_the_same_command_for_opencode_placeholders
     rendered = shlex.split(target.command)
     assert len(argv) == len(rendered)
     for actual, declared in zip(argv, rendered):
-        if declared in (reviewer_result.REVIEWER_CWD_PLACEHOLDER,
-                        reviewer_result.REVIEWER_PROMPT_FILE_PLACEHOLDER):
+        if declared == reviewer_result.REVIEWER_PROMPT_FILE_PLACEHOLDER:
             assert Path(actual).is_absolute()
         else:
             assert actual == declared
@@ -2011,8 +2009,8 @@ def test_delegate_public_wrappers_still_speak_the_shared_contract():
         shared.build_codex_argv("m", "high", "developer", "/w")
     assert contract.build_claude_argv("m", "high", "developer") == \
         shared.build_claude_argv("m", "high", "developer")
-    assert contract.build_opencode_argv("m", "high", "developer", "/w", "/p") == \
-        shared.build_opencode_argv("m", "high", "developer", "/w", "/p")
+    assert contract.build_opencode_argv("m", "high", "developer", "/p") == \
+        shared.build_opencode_argv("m", "high", "developer", "/p")
     # codex `max` 는 두 명령에서 같은 판정을 받는다(테이블이 하나라서).
     assert delegate_config._validate_reasoning("codex", "max", model="m", cwd=REPO) == "max"
     # 회신 파서 계약 — 같은 wire 를 같은 텍스트로 읽는다.

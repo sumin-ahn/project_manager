@@ -50,7 +50,7 @@ def extract_reply(harness: str, stdout: str) -> str | None:
 #   · 인증: `unexpected status 401 Unauthorized`, `invalid_api_key`, "not logged in" /
 #           "please run codex login", OAuth `invalid_state`.
 # **커버리지 경계(§help 에도 명시)**: 기존 codex 실근거에 claude 2.1.220 stdout JSONL 실측/
-# 바이너리 enum, opencode 1.18.4 provider responseBody passthrough 실측과 Anthropic API enum을
+# 바이너리 enum, opencode 2.3.0 provider 응답 본문(`error.response.body`) passthrough 실측과 Anthropic API enum을
 # 편입했다. opencode 연결 거부·첫 provider 패키지 fetch stall은 stdout/stderr 무진단 침묵이라
 # 패턴이 아니라 기존 첫-이벤트 stall 시간 제한이 커버한다. `Model not found` 같은 카탈로그/config 오류는
 # 한도/인증이 아니므로 의도적으로 미분류해 fail-loud 를 유지한다.
@@ -70,13 +70,15 @@ _INFRA_QUOTA_PATTERNS: tuple[re.Pattern[str], ...] = (
     # 연결하므로 독립 JSON 값(`"error":"rate_limit"` 류)은 항상 단독 줄이고, 스캔 대상 비-reply
     # 필드(예: permission_denials 의 command 에코)에 실린 산문 문장-중간 표기는 구조적으로
     # 배제된다(짧은 단독 토큰의 오분류=부당 대체 하네스 차단·`\s*` 는 CRLF/공백 보험).
-    # 반면 opencode passthrough 계열(아래 rate_limit_error 등)은 responseBody **JSON 문자열 안에**
-    # 박혀 오므로 줄 고정 금지 — substring `\b` 를 유지해야 실측 양성이 산다(비대칭은 의도).
+    # 반면 opencode passthrough 계열(아래 rate_limit_error 등)은 opencode 2.x 응답 본문
+    # (`error.response.body`) **JSON 문자열 안에** 박혀 오므로 줄 고정 금지 — substring `\b` 를
+    # 유지해야 실측 양성이 산다(비대칭은 의도).
     # claude 2.1.220 바이너리의 429/usage-limit/credits 경로 `_u({error:"rate_limit"})`.
     re.compile(r"^\s*rate_limit\s*$", re.IGNORECASE | re.MULTILINE),
     # claude 2.1.220 바이너리의 credit-balance HTTP 400 경로 error enum.
     re.compile(r"^\s*billing_error\s*$", re.IGNORECASE | re.MULTILINE),
-    # Anthropic 공식 429 enum; opencode는 상류 API enum을 responseBody에 verbatim passthrough한다.
+    # Anthropic 공식 429 enum; opencode는 상류 API enum을 opencode 2.x 응답 본문(`error.response.body`)에
+    # verbatim passthrough한다.
     re.compile(r"\brate_limit_error\b", re.IGNORECASE),
     # Anthropic 공식 메시지이자 claude 2.1.220 바이너리 자체 감지 regex와 같은 구조.
     re.compile(r"\bcredit balance (?:is )?too low\b", re.IGNORECASE),
@@ -95,7 +97,7 @@ _INFRA_AUTH_PATTERNS: tuple[re.Pattern[str], ...] = (
     # claude 2.1.220 미로그인 assistant/error 및 무효-key api_retry 이벤트의 error enum —
     # claude 내부 enum 이라 단독-줄 고정(사유는 _INFRA_QUOTA_PATTERNS 블록 주석).
     re.compile(r"^\s*authentication_failed\s*$", re.IGNORECASE | re.MULTILINE),
-    # opencode 1.18.4 responseBody passthrough 실측 + Anthropic 공식 401 error enum.
+    # opencode 2.3.0 응답 본문 passthrough 실측 + Anthropic 공식 401 error enum.
     re.compile(r"\bauthentication_error\b", re.IGNORECASE),
 )
 
@@ -474,9 +476,7 @@ def _build_target_argv(
         )
     if harness == "claude":
         return contract.build_claude_argv(model, reasoning, role, resume_session_id)
-    return contract.build_opencode_argv(
-        model, reasoning, role, str(cwd), str(prompt_file),
-    )
+    return contract.build_opencode_argv(model, reasoning, role, str(prompt_file))
 
 
 def _observe_harness_result(harness: str, stdout: str):

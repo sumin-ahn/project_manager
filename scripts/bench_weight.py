@@ -112,7 +112,7 @@ def parse_claude_usage(json_str: str) -> dict[str, Any]:
 def _opencode_events(json_str: str) -> list[dict[str, Any]]:
     """opencode `run --format json` 출력을 이벤트 리스트로 파싱한다.
 
-    실제 출력(opencode 1.17.6, `opencode run --help` + 라이브 캡처로 확인)은
+    실제 출력(opencode 2.3.0, 라이브 캡처로 확인)은
     **JSONL 이벤트 스트림**이다 — 한 줄당 한 JSON 객체. 단일 JSON 배열/객체로
     오는 변종도 관용적으로 받아들인다(스키마 불확실성 방어).
     """
@@ -167,7 +167,7 @@ def parse_opencode_usage(json_str: str) -> dict[str, Any]:
     """opencode `run --format json` 출력을 정규화 dict 로 파싱한다.
 
     실제 스키마(라이브 캡처): JSONL 이벤트 스트림. `step_finish` 이벤트의
-    `part.tokens.{total,input,output,reasoning,cache.{write,read}}` 와
+    `part.tokens.{input,output,reasoning,cache.{write,read}}` 와
     `part.cost` 가 토큰·비용을 담고, `text` 이벤트의 `part.text` 가 결과다.
     멀티스텝(tool 사용) 시 step_finish 가 여러 개 — 토큰·비용을 합산하고 text
     를 이어붙인다.
@@ -184,7 +184,7 @@ def parse_opencode_usage(json_str: str) -> dict[str, Any]:
     total_output = 0.0
     total_cache_read = 0.0
     total_cache_write = 0.0
-    total_tokens = 0.0
+    total_reasoning = 0.0
     total_cost = 0.0
     text_parts: list[str] = []
 
@@ -198,7 +198,7 @@ def parse_opencode_usage(json_str: str) -> dict[str, Any]:
         if tokens:
             total_input += _first_num(tokens.get("input"), tokens.get("input_tokens"))
             total_output += _first_num(tokens.get("output"), tokens.get("output_tokens"))
-            total_tokens += _first_num(tokens.get("total"), tokens.get("total_tokens"))
+            total_reasoning += _first_num(tokens.get("reasoning"))
             cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
             total_cache_read += _first_num(
                 cache.get("read"), tokens.get("cache_read"), tokens.get("cache_read_input_tokens")
@@ -222,7 +222,7 @@ def parse_opencode_usage(json_str: str) -> dict[str, Any]:
         "output": int(total_output),
         "cache_read": int(total_cache_read),
         "cache_creation": int(total_cache_write),
-        "total": int(total_tokens),
+        "total": int(total_input + total_output + total_reasoning + total_cache_read + total_cache_write),
         "cost": float(total_cost),
         "result": "".join(text_parts),
     }
@@ -420,7 +420,7 @@ def run_live(harness: str, weight: str, scenario: str, root: Path) -> dict[str, 
             out = _run_subprocess(cmd, env)
             usage = parse_claude_usage(out)
         elif harness == "opencode":
-            cmd = ["opencode", "run", prompt, "--format", "json"]
+            cmd = ["opencode", "run", prompt, "--format", "json", "--standalone"]
             out = _run_subprocess(cmd, env)
             usage = parse_opencode_usage(out)
         else:  # argparse choices 가 막지만 방어.

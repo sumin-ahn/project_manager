@@ -324,19 +324,23 @@ def test_driver_watchdog_runner_calls_engine(monkeypatch, tmp_path):
                         task="t", cwd=str(tmp_path), agent="pm", stdin=None, stdout=None)
     driver = built["driver"]
     assert driver._stall_error_types == (watchdog.StallWatchdogError,)
-    result = driver.runner(["opencode", "run", "x"], capture_output=True, text=True, timeout=600)
+    result = driver.runner(["opencode", "run", "x"], capture_output=True, text=True, timeout=600,
+                           cwd=str(tmp_path))
     assert result.returncode == 0 and result.stdout == "ok"
     assert calls["cmd"] == ["opencode", "run", "x"]
     assert calls["kw"]["first_event_timeout"] == 7.0
     assert calls["kw"]["overall_timeout"] == 600      # driver 의 600s hard 가드 전달.
     assert calls["kw"]["retries"] == 3
+    assert calls["kw"]["cwd"] == str(tmp_path)          # relay 턴·세션 조회의 child cwd 전달.
 
 
 def test_driver_turn_failsoft_on_stall():
-    """runner 가 StallWatchdogError 를 던지면 driver `_turn` 은 loud + fail-soft(빈 reply)."""
+    """turn runner 가 StallWatchdogError 를 던지면 driver `_turn` 은 loud + fail-soft(빈 reply). 세션 조회는 있음."""
     driver_mod = _load_driver()
 
     def stall_runner(cmd, **kw):
+        if cmd[1] == "api":
+            return subprocess.CompletedProcess(cmd, 0, "{}", "")
         raise watchdog.StallWatchdogError("stall 소진 테스트")
 
     driver = driver_mod.OpencodeCliDriver(
@@ -351,6 +355,8 @@ def test_driver_turn_without_stall_error_propagates():
     driver_mod = _load_driver()
 
     def stall_runner(cmd, **kw):
+        if cmd[1] == "api":
+            return subprocess.CompletedProcess(cmd, 0, "{}", "")
         raise watchdog.StallWatchdogError("stall")
 
     driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=stall_runner)
@@ -545,10 +551,10 @@ def test_opencode_stall_watchdog_e2e_kill_retry_failloud(harness_tmp_path, monke
         (harness_tmp_path / "opencode.json").write_text(
             json.dumps(cfg, indent=2), encoding="utf-8"
         )
+        # 작업 폴더는 자식 cwd(워치독이 PWD 도 같은 값으로 둔다) · 이 실행 전용 서버 · 권한 묻기 없음.
         argv = [
-            "opencode", "run", "--format", "json", "--dir", str(harness_tmp_path),
-            "--dangerously-skip-permissions", "-m", "stall/stall-model",
-            "Reply with exactly: PONG",
+            "opencode", "run", "--format", "json", "--standalone", "--auto",
+            "-m", "stall/stall-model", "Reply with exactly: PONG",
         ]
         # env 로 첫-이벤트 상한을 5초로 낮춰 kill+재시도+fail-loud 를 수십 초 내 검증.
         monkeypatch.setenv("PM_OC_FIRST_EVENT_TIMEOUT", "5")

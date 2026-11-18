@@ -178,7 +178,7 @@ def _load_pm_import():
 @pytest.fixture(scope="module")
 def pm_import():
     mod = _load_pm_import()
-    # opencode import 가 라이브 `opencode models` 를 호출하지 않게 고정 — hermetic(설치 여부 무관·토큰 0).
+    # opencode import 가 라이브 opencode 모델 목록 조회를 호출하지 않게 고정 — hermetic(설치 여부 무관·토큰 0).
     return mod
 
 
@@ -1406,7 +1406,7 @@ def test_fresh_adopter_settings_portable_and_hooks_wired(pm_import, tmp_path):
 # 이 e2e 는 fresh import 된 실 인스턴스의 전 트리를 복사본으로 뜨고 → add-harness → 다시 떠서 (a) 추가된 relpath
 # 가 추가 harness 어댑터 네임스페이스(.opencode/** ∪ AGENTS.md) 밖으로 한 개도 안 새고 · (b) 기존 relpath
 # (wiki `.project_manager/**`·엔진·타 harness `.claude/**`·root doc)가 바이트 단위 불변·0 삭제임을 전수
-# 대조한다. add-harness 는 render-only(라이브 LLM 0·`opencode models` 교체 지점은 pm_import fixture 가 stub)라
+# 대조한다. add-harness 는 render-only(라이브 LLM 0·opencode 모델 목록 조회 교체 지점은 pm_import fixture 가 stub)라
 # 결정적 — 최초 import 와 동일 in-process 경로로 구동한다(운영 진입 `pm_config add-harness` 는 별 subprocess
 # 라 stub 미상속·live 조회 위험 → 이 검사의 hermetic 계약과 맞지 않는다).
 

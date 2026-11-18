@@ -271,7 +271,7 @@ _SKILL_MANIFEST_COPY_RE = re.compile(
 
 
 def _engine_pm_import():
-    """canonical pm_import 모듈 — 라이브 `opencode models` 조회를 막은 hermetic 인스턴스.
+    """canonical pm_import 모듈 — 라이브 opencode 모델 목록 조회를 막은 hermetic 인스턴스.
 
     모델 조회 대역은 autouse fixture가 테스트마다 설정하고 복원한다."""
     module = _load_pm_import()

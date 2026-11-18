@@ -70,7 +70,7 @@ def _known_native_capacity(tmp_path,monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _hermetic_opencode_models(monkeypatch):
-    """T-0033 과 같은 방식 — apply 경로(resolve_opencode_model)가 라이브 `opencode models` CLI 를 치지
+    """T-0033 과 같은 방식 — apply 경로(resolve_opencode_model)가 라이브 opencode 모델 목록 조회 를 치지
     않도록 (False, []) 고정(미설치 동치). 이 파일의 add_harness 는 전부 dry_run 이라 실제로 도달
     하지 않지만 hermetic 보험."""
     monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))

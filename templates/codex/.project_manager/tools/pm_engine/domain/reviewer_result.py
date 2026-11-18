@@ -81,8 +81,7 @@ REVIEWER_ROLE = "code-reviewer"
 # 실행 시점에만 정해지는 경로는 세 출력(dry-run·stderr provenance·raw)이 **같은 자리표시자**로
 # 표시한다. 값이 실행마다 달라지는 토큰을 정체 문자열에 넣으면 세 출력이 서로 다른 문자열을
 # 말하게 되고, 그러면 "같은 대상을 말했는가"를 기계가 대조할 수 없다. 실 argv 에는 그 자리에
-# 실제 cwd/프롬프트 파일이 들어간다(opencode 만 해당).
-REVIEWER_CWD_PLACEHOLDER = "<review-cwd>"
+# 실제 프롬프트 파일이 들어간다(opencode 만 해당).
 REVIEWER_PROMPT_FILE_PLACEHOLDER = "<prompt-file>"
 
 

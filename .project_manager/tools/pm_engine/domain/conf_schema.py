@@ -43,11 +43,11 @@ HARNESS_CHOICES: tuple[str, ...] = ("claude", "codex", "opencode")
 #     codex 는 미지원값을 provider 로 넘기지 않고 CLI 에서 세우므로 허용집합에 명시 등재한다.
 #   · claude(`--effort`): low/medium/high/xhigh/max — claude CLI 가 미지원값에 "Valid values: low,
 #     medium, high, xhigh, max" 경고를 뱉어 **CLI-authoritative 실측**.
-#   opencode 는 이 표에 없다. 추론 강도(카드 `variant`·cross `--variant`)는 그 모델의 `variants` 키
-#   중 하나여야 적용되고, 없는 이름은 오류 없이 버려진다(1.18.5·1.18.34 실행 파일 판독). 모델마다
+#   opencode 는 이 표에 없다. 추론 강도(카드 `variant`·cross `-m 모델#강도`)는 그 모델의 `variants` id
+#   중 하나여야 하고, 없는 이름은 실행이 rc 1(`Variant unavailable`)로 끝난다(2.3.0 실측). 모델마다
 #   variants 가 다르므로(없음·low/medium/high 등) 허용값은 정적 표가 아니라 모델 목록 조회
-#   (`opencode models --verbose`)의 `variants` 에서 얻는다 — `contract.PER_MODEL_REASONING_HARNESSES`·
-#   `contract.reasoning_allowed`. 순서는 ladder 순이다(설정 화면의 선택지 순서).
+#   (`opencode api GET /api/model --standalone`)의 `variants` 에서 얻어 실행 전에 확인한다 —
+#   `contract.PER_MODEL_REASONING_HARNESSES`·`contract.reasoning_allowed`. 순서는 ladder 순이다(설정 화면의 선택지 순서).
 REASONING_ALLOWED: dict[str, tuple[str, ...]] = {
     "codex": ("low", "medium", "high", "xhigh", "max"),
     "claude": ("low", "medium", "high", "xhigh", "max"),

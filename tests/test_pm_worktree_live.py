@@ -340,7 +340,7 @@ def test_pm_worktree_live_claude(harness_tmp_path, monkeypatch):
     """실 claude 가 pm-worktree 스킬만 보고 dev/sync 시나리오를 운영·실 git 3 단언 (hard).
 
     스킬(SKILL.md)만 컨텍스트로 주고 [dev 지정 → 재동기]를 시킨다 — 진입문서 경로 미제공. claude 는
-    subprocess cwd 를 존중(`--dir` 불요)·stream-json 으로 backbone(worktree_pool.py dev·sync) 실행을
+    subprocess cwd 를 작업 폴더로 쓴다. stream-json 으로 backbone(worktree_pool.py dev·sync) 실행을
     **hard** 관측(false-green 백스톱)하고, 실 git 상태(dev no-clobber·consume 재동기·슬롯 no-track)를
     hard 단언한다. 초기 비공허(`_assert_initial_state`)라 미실행 시 red. API 과금(dev+sync 2콜).
     """
@@ -386,8 +386,8 @@ def test_pm_worktree_live_opencode_best_effort(harness_tmp_path, monkeypatch):
     hard-claim 못 한다(release_cluster 위임-관측 비대칭 상속). 그래서 hard 상한 = **실 git 상태 3 단언**
     (side-effect·초기 비공허라 미실행 시 red)이고, 커맨드 실행 관측은 stdout 에코가 있을 때만
     best-effort 다. claude 경로(`test_pm_worktree_live_claude`)가 커맨드를 hard 로 커버하는 짝이다.
-    `--dir` 로 루트 핀(opencode 는 PWD 로 루트 오판)·`--dangerously-skip-permissions`(비대화 헤드리스
-    auto-reject 회피·throwaway tmp 홈 격리·release_cluster 동일 근거). API 과금 0(ollama).
+    실행 위치는 자식 cwd·`--standalone`(이 실행 전용 서버)·`--auto`(비대화 헤드리스에서 묻는 권한 자동
+    승인·throwaway tmp 홈 격리·release_cluster 동일 근거). API 과금 0(ollama).
     """
     fx = _setup_home_with_submodule_slot(harness_tmp_path, "opencode", monkeypatch)
     _assert_initial_state(fx)
@@ -395,8 +395,7 @@ def test_pm_worktree_live_opencode_best_effort(harness_tmp_path, monkeypatch):
     prompt = _pm_worktree_prompt(
         _OPENCODE_SKILL.read_text(encoding="utf-8"), root=fx.home)
     proc = subprocess.run(
-        ["opencode", "run", "--agent", "build", "--dir", str(fx.home),
-         "--dangerously-skip-permissions", "-m", LIVE_MODEL, prompt],
+        ["opencode", "run", "--standalone", "--agent", "build", "--auto", "-m", LIVE_MODEL, prompt],
         cwd=str(fx.home), capture_output=True, text=True, encoding="utf-8", errors="replace",
         env={**_live_env(LIVE_MODEL), **_FILE_PROTO_ENV}, timeout=_OPENCODE_TIMEOUT,
     )

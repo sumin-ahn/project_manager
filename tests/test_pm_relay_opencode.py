@@ -6,8 +6,8 @@ FakeRunner DI(claude driver 테스트 패턴) 로 subprocess 폭발 없이 CLI �
 
 검증 항목 (ticket DoD):
   ① parse_opencode_json 순수 — sessionID→sid · type:"text" part.text 누적→reply · 비-JSON skip · edge.
-  ② driver spawn — 엔진 uuid4 **무시** 하고 출력 파싱 sid 반환 · `--agent` · `--dir` 격리 · `--format json`.
-  ③ driver relay_turn — `-s <sid>` 로 resume · reply 파싱 · spawn cwd 재사용.
+  ② driver spawn — 엔진 uuid4 **무시** 하고 출력 파싱 sid 반환 · `--agent` · child cwd 격리 · `--standalone` · `--format json`.
+  ③ driver relay_turn — 세션 조회 뒤 `-s <sid>` 로 resume · reply 파싱 · spawn cwd 재사용 · 없는 세션은 멈춤.
   ④ driver close — no-op(세션 cwd 메타 정리).
   ⑤ subprocess 폭발 가드 — driver 가 실 opencode 를 부르지 않음(FakeRunner).
 
@@ -57,7 +57,7 @@ def driver_mod():
     return _load("pm_orch_opencode", OPENCODE_DRIVER)
 
 
-# ── opencode JSON 이벤트 헬퍼 (실측 형식·opencode 1.17.6) ─────────────────────
+# ── opencode JSON 이벤트 헬퍼 (실측 형식·opencode 2.3.0) ──────────────────────
 import json as _json  # noqa: E402
 
 
@@ -159,9 +159,8 @@ def test_parse_opencode_no_sessionid(orch):
 
 
 def test_parse_opencode_step_finish_tokens_fixture(orch):
-    """opencode 1.18.5 실측 fixture는 유효한 total을 정규화된 세부값보다 우선한다."""
+    """opencode 2.3.0 tokens 에는 total 이 없다. 사용량은 다섯 값(input·output·reasoning·cache read/write)의 합이다."""
     tokens = {
-        "total": 8131,
         "input": 128,
         "output": 3,
         "reasoning": 0,
@@ -182,8 +181,8 @@ def test_parse_opencode_step_finish_without_tokens_is_none(orch):
     assert contract.parse_opencode_json(lines) == ("ses_none", None, None)
 
 
-def test_parse_opencode_last_step_finish_wins_and_fallback_includes_cache(orch):
-    """마지막 step_finish가 권위이며 total 부재 fallback은 cache read/write도 합산한다."""
+def test_parse_opencode_last_step_finish_wins_and_sum_includes_cache(orch):
+    """마지막 step_finish가 권위이며 합은 cache read/write도 더한다."""
     lines = [
         _ev(type="step_finish", sessionID="ses_last", part={
             "tokens": {"input": 900, "output": 80, "reasoning": 20},
@@ -198,8 +197,8 @@ def test_parse_opencode_last_step_finish_wins_and_fallback_includes_cache(orch):
     assert contract.parse_opencode_json(lines) == ("ses_last", None, 1365)
 
 
-def test_parse_opencode_fallback_rejects_non_integer_token_value(orch):
-    """fallback 구성값 하나라도 비정수면 합계를 만들지 않는다(유효성 가드 old-red)."""
+def test_parse_opencode_rejects_non_integer_token_value(orch):
+    """구성값 하나라도 비정수면 합계를 만들지 않는다(유효성 가드 old-red)."""
     lines = [_ev(type="step_finish", sessionID="ses_bad_int", part={
         "tokens": {
             "input": "50", "output": 10, "reasoning": 5,
@@ -209,7 +208,7 @@ def test_parse_opencode_fallback_rejects_non_integer_token_value(orch):
     assert contract.parse_opencode_json(lines) == ("ses_bad_int", None, None)
 
 
-def test_parse_opencode_fallback_rejects_non_dict_cache(orch):
+def test_parse_opencode_rejects_non_dict_cache(orch):
     """cache가 dict가 아니면 read/write 누락을 0으로 오인하지 않고 None으로 거부한다."""
     lines = [_ev(type="step_finish", sessionID="ses_bad_cache", part={
         "tokens": {"input": 50, "output": 10, "reasoning": 5, "cache": []},
@@ -250,7 +249,7 @@ def _json_stream(sid: str, reply: str, *, tokens: dict | None = None) -> str:
     )
 
 
-# ── ② driver spawn (엔진 uuid4 무시·출력 sid 반환·--agent·--dir·--format json) ─
+# ── ② driver spawn (엔진 uuid4 무시·출력 sid 반환·--agent·child cwd·--format json) ─
 
 def test_opencode_driver_spawn_ignores_uuid_returns_parsed_sid(orch, driver_mod, tmp_path):
     """spawn 이 엔진 uuid4 인자를 **무시** 하고 opencode 출력에서 파싱한 sid 를 반환한다
@@ -279,9 +278,10 @@ def test_opencode_driver_spawn_ignores_uuid_returns_parsed_sid(orch, driver_mod,
     assert cmd[:5] == ["opencode", "run", contract.OPENCODE_ATTACHED_MSG, "--file", str(prompt_file)]
     assert cmd[cmd.index("--format") + 1] == "json"
     assert "--agent" in cmd and "pm" in cmd  # PM primary 기본 spawn 타깃(T-0045).
-    assert "--dir" in cmd and str(tmp_path) in cmd  # child cwd 격리.
+    assert captured["kwargs"]["cwd"] == str(tmp_path) and "--dir" not in cmd  # child cwd 격리.
+    assert "--standalone" in cmd  # 상주 서비스에 붙지 않는다(역할 설정이 그 서비스의 것이 된다).
     assert "-s" not in cmd  # 첫 spawn 은 resume 안 함.
-    # 프롬프트는 실행 인자가 아니라 `--dir` 안 프롬프트 파일이다(cross 위임과 같은 `--file` 전달).
+    # 프롬프트는 실행 인자가 아니라 child cwd 안 프롬프트 파일이다(cross 위임과 같은 `--file` 전달).
     assert captured["prompt"] == "bootstrap text" and "bootstrap text" not in cmd
     assert prompt_file.parent.parent == tmp_path / ".project_manager" / ".local" / "tmp"
     assert not prompt_file.exists(), "turn 뒤 프롬프트 파일이 남았다"
@@ -364,15 +364,11 @@ def test_opencode_driver_relay_uses_session_flag(orch, driver_mod):
 
 
 def test_opencode_driver_relay_reuses_spawn_cwd(orch, driver_mod, tmp_path):
-    """relay 가 spawn 때의 cwd(--dir)를 재사용한다 — child cwd 격리 일관."""
+    """relay 가 spawn 때의 child cwd 를 세션 조회와 turn 에 재사용한다 — child cwd 격리 일관."""
     dirs = []
 
     def fake_run(cmd, **kwargs):
-        # --dir 다음 토큰을 기록.
-        if "--dir" in cmd:
-            dirs.append(cmd[cmd.index("--dir") + 1])
-        else:
-            dirs.append(None)
+        dirs.append(kwargs.get("cwd"))
         if "--agent" in cmd:
             return _FakeCompleted(_json_stream("ses_cwd", "READY"))
         return _FakeCompleted(_json_stream("ses_cwd", "ok"))
@@ -381,21 +377,70 @@ def test_opencode_driver_relay_reuses_spawn_cwd(orch, driver_mod, tmp_path):
     spawned = driver.spawn(str(tmp_path), "uuid", "boot")
     sid, _ = spawned
     driver.relay_turn(sid, "msg")
-    assert dirs == [str(tmp_path), str(tmp_path)]
+    assert dirs == [str(tmp_path)] * 3  # spawn · 세션 조회 · relay turn
 
 
-def test_opencode_driver_relay_unknown_session_no_dir(orch, driver_mod):
-    """모르는 세션(메타 없음) relay 는 --dir 없이도 fail-soft(빈 cwd 메타)."""
+def test_opencode_driver_relay_unknown_session_inherits_cwd(orch, driver_mod):
+    """모르는 세션(메타 없음) relay 는 child cwd 를 지정하지 않는다(빈 cwd 메타 · 부모 cwd 상속)."""
     captured = {}
 
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
+        captured["cwd"] = kwargs.get("cwd")
         return _FakeCompleted(_json_stream("ses_u", "r"))
 
     driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=fake_run)
     reply = driver.relay_turn("ses_never_spawned", "x")
     assert reply == "r"
-    assert "--dir" not in captured["cmd"]  # cwd 메타 없으면 --dir 생략.
+    assert captured["cwd"] is None and "--dir" not in captured["cmd"]
+
+
+def test_opencode_driver_relay_checks_the_session_before_resuming(orch, driver_mod, tmp_path):
+    """relay turn 은 먼저 `opencode api GET /api/session/<sid> --standalone` 로 세션을 조회하고(같은 child cwd ·
+    표준 입력 닫음), 있으면 `-s <sid>` turn 을 보낸다."""
+    calls_seen = []
+
+    def fake_run(cmd, **kwargs):
+        calls_seen.append((list(cmd), kwargs.get("cwd"), kwargs.get("stdin")))
+        if cmd[1] == "api":
+            return _FakeCompleted('{"id": "ses_k"}')
+        return _FakeCompleted(_json_stream("ses_k", "pong"))
+
+    driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=fake_run)
+    driver._session_cwd["ses_k"] = str(tmp_path)
+    assert driver.relay_turn("ses_k", "ping") == "pong"
+    (check, check_cwd, check_stdin), (turn, turn_cwd, _stdin) = calls_seen
+    assert check == ["opencode", "api", "GET", "/api/session/ses_k", "--standalone"]
+    assert check_cwd == turn_cwd == str(tmp_path) and check_stdin == subprocess.DEVNULL
+    assert turn[turn.index("-s") + 1] == "ses_k" and "--standalone" in turn
+
+
+def test_opencode_driver_relay_missing_session_stops_without_a_new_session(orch, driver_mod, tmp_path):
+    """세션 조회가 rc≠0 이면(없는 세션 · opencode 2.x 는 `run -s <없는 id>` 를 새 세션으로 만든다) turn 을 보내지
+    않고 RuntimeError 로 relay 를 멈춘다. 조회 실행 자체의 예외(시간 초과)도 잡지 않고 turn 을 보내지 않는다."""
+    sent = []
+
+    def missing(cmd, **kwargs):
+        sent.append(cmd[1])
+        if cmd[1] == "api":
+            return _FakeCompleted('{"_tag":"SessionNotFoundError"}', returncode=1)
+        return _FakeCompleted(_json_stream("ses_new", "fresh"))
+
+    driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=missing)
+    driver._session_cwd["ses_gone"] = str(tmp_path)
+    with pytest.raises(RuntimeError, match="ses_gone.*SessionNotFoundError"):
+        driver.relay_turn("ses_gone", "ping")
+    assert sent == ["api"], "없는 세션에 turn 을 보냈다"
+
+    def check_times_out(cmd, **kwargs):
+        sent.append(cmd[1])
+        raise subprocess.TimeoutExpired(cmd, 1)
+
+    sent.clear()
+    driver.runner = check_times_out
+    with pytest.raises(subprocess.TimeoutExpired):
+        driver.relay_turn("ses_gone", "ping")
+    assert sent == ["api"], "조회하지 못한 세션에 turn 을 보냈다"
 
 
 # ── ④ driver close (no-op·세션 cwd 메타 정리) ────────────────────────────────
@@ -417,8 +462,10 @@ def test_opencode_driver_close_is_noop_and_clears_meta(orch, driver_mod, tmp_pat
 # ── ⑤ driver fail-soft (timeout·실행실패) ────────────────────────────────────
 
 def test_opencode_driver_relay_timeout_returns_empty(orch, driver_mod):
-    """subprocess timeout 은 fail-soft — 빈 reply(루프 안 죽음)."""
+    """turn 의 subprocess timeout 은 fail-soft — 빈 reply(루프 안 죽음). 세션 조회는 있음."""
     def fake_run(cmd, **kwargs):
+        if cmd[1] == "api":
+            return _FakeCompleted("{}")
         raise subprocess.TimeoutExpired(cmd, 1)
 
     driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=fake_run)
@@ -426,8 +473,10 @@ def test_opencode_driver_relay_timeout_returns_empty(orch, driver_mod):
 
 
 def test_opencode_driver_relay_oserror_returns_empty(orch, driver_mod):
-    """opencode 바이너리 부재(OSError)도 fail-soft."""
+    """turn 의 실행 실패(OSError)도 fail-soft. 세션 조회는 있음."""
     def fake_run(cmd, **kwargs):
+        if cmd[1] == "api":
+            return _FakeCompleted("{}")
         raise OSError("opencode not found")
 
     driver = driver_mod.OpencodeCliDriver(contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd, runner=fake_run)
@@ -485,11 +534,10 @@ def test_opencode_driver_relay_under_threshold_does_not_mark(
     orch, driver_mod, tmp_path,
 ):
     tokens = {
-        "total": 7999,
         "input": 7000,
         "output": 999,
         "reasoning": 0,
-        "cache": {"read": 9000, "write": 9000},
+        "cache": {"read": 0, "write": 0},
     }
     driver = driver_mod.OpencodeCliDriver(
         contract.parse_opencode_json, spawn_result=relay.SpawnResult, temp_root=raw_output.temp_root, attached_message=contract.OPENCODE_ATTACHED_MSG, assert_prompt_in_cwd=contract.assert_opencode_prompt_in_cwd,
@@ -637,19 +685,21 @@ def test_supervisor_with_opencode_driver_rotation(orch, driver_mod, tmp_path):
     counts = {"spawn": 0, "relay": 0}
 
     def fake_run(cmd, **kwargs):
+        if cmd[1] == "api":  # relay turn 앞 세션 조회(있음).
+            return _FakeCompleted("{}")
         if "--agent" in cmd:
             counts["spawn"] += 1
             sid = f"ses_{counts['spawn']}"
             return _FakeCompleted(_json_stream(
-                sid, "READY", tokens={"total": 100, "input": 100, "output": 0},
+                sid, "READY", tokens={"input": 100, "output": 0},
             ))
         counts["relay"] += 1
         sid = cmd[cmd.index("-s") + 1]
         tokens = (
-            # total 부재 cache-heavy: old 600(미실행), corrected 8100(≥8000, 실행).
+            # cache-heavy: 세부값 합 8100(≥8000, 실행).
             {"input": 500, "output": 100, "reasoning": 0,
              "cache": {"read": 7500, "write": 0}}
-            if counts["relay"] == 1 else {"total": 200, "input": 200, "output": 0}
+            if counts["relay"] == 1 else {"input": 200, "output": 0}
         )
         return _FakeCompleted(_json_stream(sid, f"reply:{cmd[-1]}", tokens=tokens))
 
@@ -741,9 +791,12 @@ def _live_runner_with_model(model: str):
     """
     def runner(cmd, **kwargs):
         injected = list(cmd)
-        if "-m" not in injected:
-            # 드라이버 인자 끝에 -m <model> 을 붙인다.
+        if injected[1] == "run" and "-m" not in injected:
+            # 드라이버 turn 인자 끝에 -m <model> 을 붙인다(세션 조회 `api` 에는 붙이지 않는다).
             injected = injected + ["-m", model]
+        if kwargs.get("cwd") is not None:
+            # 엔진 runner(워치독)처럼 자식 PWD 를 child cwd 로 둔다. opencode 2.x `run` 은 PWD 를 먼저 본다.
+            kwargs["env"] = {**os.environ, "PWD": os.path.abspath(kwargs["cwd"])}
         return subprocess.run(injected, **kwargs)
 
     return runner
@@ -751,7 +804,7 @@ def _live_runner_with_model(model: str):
 
 # ── 모델 목록 조회(`contract.model_listing`) — 모델과 모델별 variants (T-0946) ──────────────────
 # 조회 실행·판독·시간 상한의 주인은 contract 하나다(pm_import 에서 옮겨 왔다). 가짜 실행 파일은
-# 실제 `opencode models --verbose` 출력 형식을 재현한다(`_fake_opencode`).
+# 실제 `opencode api GET /api/model --standalone` 출력 형식을 재현한다(`_fake_opencode`).
 from _fake_opencode import (  # noqa: E402
     OLLAMA_LISTING, calls, install_fake_opencode, listing_for, path_with,
 )
@@ -769,8 +822,9 @@ def _fake_env(folder: Path) -> dict[str, str]:
 
 
 @_needs_posix_fake
-def test_model_listing_reads_models_and_variants(orch, tmp_path):
-    """머리 줄 순서로 모델을, 모델 객체의 `variants` 키를 원문 순서로 읽고 같은 조건은 한 번만 조회한다."""
+def test_model_listing_reads_models_variants_and_limits(orch, tmp_path):
+    """응답 순서로 모델(`providerID/id`)을, 모델의 `variants` id 를 원문 순서로, `limit` 을 그대로 읽고 같은 조건은
+    한 번만 조회한다."""
     fakebin = install_fake_opencode(tmp_path / "fakebin", OLLAMA_LISTING)
     env = _fake_env(fakebin)
 
@@ -782,10 +836,12 @@ def test_model_listing_reads_models_and_variants(orch, tmp_path):
         "ollama/glm-5.2:cloud": (),
         "ollama/ornith1.5:35b-a3b": ("low", "medium", "high"),
     }
+    assert listing.limits == {"ollama/glm-5.2:cloud": {"context": 200000, "output": 32000},
+                              "ollama/ornith1.5:35b-a3b": {"context": 200000, "output": 32000}}
     assert again == listing
     recorded = calls(fakebin)
     assert len(recorded) == 1, f"같은 조건의 조회가 다시 실행됐다: {recorded}"
-    assert recorded[0][1] == "models --verbose"
+    assert recorded[0][1] == "api GET /api/model --standalone"
     assert contract.model_listing(contract.MODEL_SOURCE["claude"], cwd=tmp_path, env={}).variants is None
 
 
@@ -797,7 +853,7 @@ def test_model_listing_stops_on_lookup_failure(orch, tmp_path, monkeypatch):
     with pytest.raises(contract.HarnessContractError) as excinfo:
         contract.model_listing(source, cwd=tmp_path, env=_fake_env(failing))
     message = str(excinfo.value)
-    assert "opencode models --verbose" in message and "rc=7" in message and "boom" in message
+    assert "opencode api GET /api/model --standalone" in message and "rc=7" in message and "boom" in message
 
     empty = tmp_path / "empty-bin"
     empty.mkdir()
@@ -805,16 +861,17 @@ def test_model_listing_stops_on_lookup_failure(orch, tmp_path, monkeypatch):
         contract.model_listing(source, cwd=tmp_path, env={"PATH": str(empty)})
     assert "PATH 부재" in str(excinfo.value)
 
-    without_variants = OLLAMA_LISTING.replace('  "variants": {}\n', '  "other": {}\n')
+    without_variants = OLLAMA_LISTING.replace('"variants": []', '"other": []', 1)
+    without_limit = json.dumps({"data": [{"providerID": "ollama", "id": "m", "variants": []}]})
     assert without_variants != OLLAMA_LISTING
     codex_catalog = json.dumps({"models": [{"slug": "gpt-5.6-sol"}]})
-    for index, listing in enumerate((without_variants, "", codex_catalog)):
+    for index, listing in enumerate((without_variants, without_limit, "", codex_catalog)):
         broken = install_fake_opencode(tmp_path / f"broken-{index}", listing)
         with pytest.raises(contract.HarnessContractError):
             contract.model_listing(source, cwd=tmp_path, env=_fake_env(broken))
 
     def _raise_timeout(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired(cmd="opencode models --verbose", timeout=60)
+        raise subprocess.TimeoutExpired(cmd="opencode api GET /api/model --standalone", timeout=60)
 
     monkeypatch.delenv("PM_OPENCODE_MODELS_TIMEOUT", raising=False)
     monkeypatch.setattr(contract, "resolve_executable", lambda name, env: name)
@@ -833,8 +890,8 @@ def test_reasoning_allowed_sources_partition_the_harnesses(orch, tmp_path):
     assert static | per_model == set(conf_schema.HARNESS_CHOICES)
     assert "opencode" not in conf_schema.REASONING_ALLOWED, "opencode 정적 허용값 행이 남았다"
     for harness in contract.PER_MODEL_REASONING_HARNESSES:
-        assert contract.MODEL_SOURCE[harness].parse == "opencode-verbose", harness
-    assert contract.MODEL_SOURCE["opencode"].command == ("opencode", "models", "--verbose")
+        assert contract.MODEL_SOURCE[harness].parse == "opencode-api-model", harness
+    assert contract.MODEL_SOURCE["opencode"].command == ("opencode", "api", "GET", "/api/model", "--standalone")
     assert contract.reasoning_allowed("claude", None, cwd=tmp_path, env={}) == (
         "low", "medium", "high", "xhigh", "max")
     with pytest.raises(contract.HarnessContractError):
@@ -897,7 +954,7 @@ def test_model_listing_uses_the_resolved_timeout(orch, tmp_path, monkeypatch, ba
 
     monkeypatch.setattr(contract.subprocess, "run", _capture)
     listing = contract.model_listing(_codex_source(orch), cwd=tmp_path, env={"A": "1"})
-    assert listing == contract.ModelListing(("gpt-6-astra",), None)
+    assert listing == contract.ModelListing(("gpt-6-astra",), None, None)
     assert seen["timeout"] == 200
     assert seen["argv"] == ["codex", "debug", "models"]
     assert seen["cwd"] == str(tmp_path) and seen["env"] == {"A": "1"}
@@ -952,21 +1009,24 @@ def test_a_catalog_that_does_not_parse_is_a_failure(orch, tmp_path, monkeypatch,
 def test_an_undeclared_source_kind_or_parse_name_is_fail_loud(orch, tmp_path):
     """표가 모르는 kind·판독 이름은 선언과 판정이 갈린 것이다 — 아무 형식으로나 읽지 않는다."""
     for source in (
-        contract.ModelSource("nope", (), None, None, "", ""),
-        contract.ModelSource("live", (), ("x",), "nope", "", ""),
+        contract.ModelSource("nope", (), None, None, "", "", ""),
+        contract.ModelSource("live", (), ("x",), "nope", "", "", ""),
     ):
         with pytest.raises(contract.HarnessContractError):
             contract.model_listing(source, cwd=tmp_path, env={})
 
 
-def test_listing_for_matches_the_verbose_output_shape():
-    """가짜 출력은 실측 형식(머리 줄 + indent 2 JSON, variants 없는 모델은 `{}`)을 그대로 낸다."""
-    assert OLLAMA_LISTING.startswith(
-        'ollama/glm-5.2:cloud\n{\n  "id": "glm-5.2:cloud",\n  "providerID": "ollama",\n'
-        '  "variants": {}\n}\nollama/ornith1.5:35b-a3b\n{\n')
-    assert '  "variants": {\n    "low": {},\n    "medium": {},\n    "high": {}\n  }\n}\n' \
-        in OLLAMA_LISTING
-    assert listing_for({}) == ""
+def test_listing_for_matches_the_api_model_shape():
+    """가짜 출력은 실측 형식(`{"location", "data": [{providerID, id, variants: [{id}], limit}]}`)을 그대로 낸다."""
+    document = json.loads(OLLAMA_LISTING)
+    assert set(document) == {"location", "data"}
+    assert document["data"] == [
+        {"id": "glm-5.2:cloud", "providerID": "ollama", "variants": [],
+         "limit": {"context": 200000, "output": 32000}},
+        {"id": "ornith1.5:35b-a3b", "providerID": "ollama",
+         "variants": [{"id": "low"}, {"id": "medium"}, {"id": "high"}],
+         "limit": {"context": 200000, "output": 32000}}]
+    assert json.loads(listing_for({}))["data"] == []
 
 
 # ── 실행 파일 해소 한 곳(`resolve_executable`) — 세 실행 자리가 쓴다 (T-0946 리뷰 03 F-001) ─────────────
@@ -1025,13 +1085,28 @@ def test_harness_cli_spawns_resolve_executable_to_the_found_path(orch, tmp_path,
     monkeypatch.setattr(contract.subprocess, "run", _run)
     env = {"PATH": str(tmp_path / "npm")}
     contract.model_listing(contract.MODEL_SOURCE["opencode"], cwd=tmp_path / "listing", env=env)
-    assert seen["argv"] == [shim, "models", "--verbose"]
+    assert seen["argv"] == [shim, "api", "GET", "/api/model", "--standalone"]
     assert looked_up[-1] == ("opencode", str(tmp_path / "npm")), "해소가 자식 env 의 PATH 를 보지 않았다"
 
     recorder = _RecordingPopen()
     monkeypatch.setattr(contract.subprocess, "Popen", recorder)
     watchdog._WatchedPopen(["opencode", "run", "--format", "json"], env=env)
     assert recorder.argv == [shim, "run", "--format", "json"]
+
+
+def test_watched_popen_sets_child_pwd_to_its_cwd(orch, tmp_path):
+    """워치독이 띄우는 자식의 `PWD` 는 자식 cwd 다. opencode 2.x `run` 은 `PWD` 를 cwd 보다 먼저 작업 폴더로
+    쓴다(2.3.0 실측: 부모 `PWD` 를 물려받으면 부모 폴더에서 세션이 돈다). cwd 를 주지 않으면 env 를 바꾸지 않는다."""
+    import sys
+    show = [sys.executable, "-c", "import os, sys; sys.stdout.write(os.environ.get('PWD', '<none>'))"]
+    work = tmp_path / "work"
+    work.mkdir()
+    proc = watchdog._WatchedPopen(show, cwd=str(work), env={**os.environ, "PWD": str(tmp_path / "elsewhere")})
+    stdout, _stderr = proc.communicate(timeout=30)
+    assert proc.returncode == 0 and stdout == os.path.abspath(str(work))
+    inherited = watchdog._WatchedPopen(show, env={**os.environ, "PWD": "/kept"})
+    stdout, _stderr = inherited.communicate(timeout=30)
+    assert stdout == "/kept"
 
 
 def test_harness_cli_spawns_resolve_executable_failure_keeps_the_path_message(orch, tmp_path, monkeypatch):
@@ -1063,9 +1138,9 @@ def test_harness_cli_spawns_resolve_executable_posix_unchanged(orch, tmp_path):
     env = _fake_env(fakebin)
     resolved = contract.resolve_executable("opencode", env)
     assert resolved == shutil.which("opencode", path=env["PATH"]) == str(fakebin / "opencode")
-    proc = watchdog._WatchedPopen(["opencode", "models", "--verbose"], cwd=str(tmp_path), env=env)
+    proc = watchdog._WatchedPopen(["opencode", "api", "GET", "/api/model", "--standalone"], cwd=str(tmp_path), env=env)
     stdout, _stderr = proc.communicate(timeout=30)
-    assert proc.returncode == 0 and stdout.startswith("ollama/glm-5.2:cloud")
+    assert proc.returncode == 0 and json.loads(stdout)["data"][0]["id"] == "glm-5.2:cloud"
     with pytest.raises(FileNotFoundError):
         contract.resolve_executable("opencode", {"PATH": str(tmp_path / "nowhere")})
 
@@ -1096,9 +1171,13 @@ def _relay_driver_argvs(orch, driver_mod, tmp_path) -> list[list[str]]:
     """relay 세션 회전 드라이버 셋(claude·codex·opencode)이 여러 줄 프롬프트로 spawn·relay 할 때의 실행 인자."""
     argvs: list[list[str]] = []
     prompts: list[str] = []
+    checks: list[list[str]] = []  # opencode relay turn 앞 세션 조회(프롬프트 없음)
 
     def recording(stdout):
         def runner(cmd, **kwargs):
+            if cmd[1] == "api":
+                checks.append(list(cmd))
+                return _FakeCompleted("{}")
             argvs.append(list(cmd))
             if "--file" in cmd:
                 with open(cmd[cmd.index("--file") + 1], encoding="utf-8", newline="") as handle:
@@ -1126,7 +1205,8 @@ def _relay_driver_argvs(orch, driver_mod, tmp_path) -> list[list[str]]:
         contract.parse_stream_json, spawn_result=relay.SpawnResult, runner=recording(json.dumps({"type": "result", "result": "ok"})))
     claude.relay_turn("uuid-m", _MULTILINE_PROMPT)
     assert prompts == [_MULTILINE_PROMPT] * len(argvs), "드라이버가 프롬프트 전문을 전달하지 않았다"
-    return argvs
+    assert len(checks) == 1
+    return argvs + checks
 
 
 def test_engine_spawn_argv_carries_no_multiline_value(orch, driver_mod, tmp_path):
@@ -1138,7 +1218,7 @@ def test_engine_spawn_argv_carries_no_multiline_value(orch, driver_mod, tmp_path
         argvs.append(contract.build_claude_argv("sonnet", "high", role))
         argvs.append(contract.build_codex_argv("gpt-6", "high", role, cwd=str(tmp_path)))
         argvs.append(contract.build_opencode_argv(
-            "ollama/m", "high", role, str(tmp_path), str(tmp_path / "prompt.md")))
+            "ollama/m", "high", role, str(tmp_path / "prompt.md")))
     argvs.extend(_relay_driver_argvs(orch, driver_mod, tmp_path))
     multiline = [(argv, part) for argv in argvs for part in argv if "\n" in part or "\r" in part]
     assert multiline == []

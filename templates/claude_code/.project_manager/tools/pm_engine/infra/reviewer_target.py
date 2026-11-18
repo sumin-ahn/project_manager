@@ -66,8 +66,7 @@ class ReviewerTarget(NamedTuple):
 
 
 def _structured_reviewer_argv(
-    harness: str, model: str, reasoning: str | None, *,
-    cwd: str, prompt_file: str,
+    harness: str, model: str, reasoning: str | None, *, prompt_file: str,
 ) -> list[str]:
     """구조화 대상의 argv — 공용 드라이버 계약(`contract`)만으로 조립한다.
 
@@ -75,15 +74,14 @@ def _structured_reviewer_argv(
     config 기본값(모델·effort)이 실제 수신자를 바꿀 수 없는 이유가 이것이다 — 명시 플래그가
     config 기본값을 이긴다.
 
-    codex/claude 는 프로세스 cwd 를 그대로 쓰므로 실행마다 달라지는 토큰이 argv 에
-    없다. opencode 만 subprocess cwd 를 무시해 `--dir` 이 필요하고 프롬프트도 `--file` 첨부라,
-    그 두 자리는 자리표시자로 렌더한 뒤 실행 시점에 실 경로로 조립한다.
+    세 하네스 모두 프로세스 cwd 를 작업 폴더로 쓴다. opencode 만 프롬프트가 `--file` 첨부라 그 자리는
+    자리표시자로 렌더한 뒤 실행 시점에 실 경로로 조립한다.
     """
     if harness == "codex":
         return contract.build_codex_argv(model, reasoning, reviewer_result.REVIEWER_ROLE)
     if harness == "claude":
         return contract.build_claude_argv(model, reasoning, reviewer_result.REVIEWER_ROLE)
-    return contract.build_opencode_argv(model, reasoning, reviewer_result.REVIEWER_ROLE, cwd, prompt_file)
+    return contract.build_opencode_argv(model, reasoning, reviewer_result.REVIEWER_ROLE, prompt_file)
 
 
 def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
@@ -153,8 +151,7 @@ def resolve_reviewer_target(conf: dict[str, str]) -> ReviewerTarget:
     reasoning = contract.normalize_reasoning(declared[reviewer_result.ADDITIONAL_REVIEWER_REASONING_KEY])
 
     command = shlex.join(_structured_reviewer_argv(
-        harness, model, reasoning,
-        cwd=reviewer_result.REVIEWER_CWD_PLACEHOLDER, prompt_file=reviewer_result.REVIEWER_PROMPT_FILE_PLACEHOLDER,
+        harness, model, reasoning, prompt_file=reviewer_result.REVIEWER_PROMPT_FILE_PLACEHOLDER,
     ))
     return ReviewerTarget(
         source=reviewer_result.REVIEWER_SOURCE_STRUCTURED, command=command,

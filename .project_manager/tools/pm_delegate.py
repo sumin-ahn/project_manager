@@ -9,7 +9,7 @@ PM 메인세션(claude/codex/opencode 어디든)이 세션을 떠나지 않고 �
   · config 해소  — `delegate.<role>[.<tier>].harness/.model/.reasoning` 3키를 **원자 tuple**
                   `(harness, model, reasoning)` 로 해소(티어 세트 통째·혼합 상속/부분 override 금지).
   · 3 드라이버   — codex(`-a never -s <mode> exec --json`·stdin)·claude(`-p --tools`·stdin)·
-                  opencode(`run --file --agent --dir`). reasoning 은 드라이버별 플래그.
+                  opencode(`run --file --agent --standalone`). reasoning 은 드라이버별 표기.
   · 권한 매핑    — 역할 기준(write=developer/architect·read=researcher/code-reviewer)을 argv/sandbox 로
                   강제하되 보장 수준을 정직 표기.
   · 쓰기 대상 기준 — 엔진 코드(`.project_manager/tools/`) write 위임이 PM 홈 cwd 면 canonical

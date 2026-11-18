@@ -876,7 +876,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "primary·대체 하네스 각 예산의 합입니다 — codex/claude 는 timeout, opencode 는 첫-이벤트\n"
             "워치독 재시도분(retries×창)이 더 붙습니다. --dry-run 이 실수치를 표시합니다(두 번째 대체 동작 없음).\n"
             "실패 분류 커버리지: codex 실근거와 claude 2.1.220 실측/바이너리 enum,\n"
-            "opencode 1.18.4 provider passthrough 실측·Anthropic API enum을 편입했습니다.\n"
+            "opencode 2.3.0 provider passthrough 실측·Anthropic API enum을 편입했습니다.\n"
             "opencode 무진단 연결/fetch 침묵은 첫 이벤트 시간 제한(stall)이 맡으며 그 밖은 fail-loud입니다."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -984,7 +984,7 @@ def _dry_run_harness_annotations(
         if "opencode" in names else ""
     )
     transport_note = (
-        "  (opencode: 실행 시 합성 프롬프트를 --dir 하위 .project_manager/.local/delegate/의 "
+        "  (opencode: 실행 시 합성 프롬프트를 작업 폴더 하위 .project_manager/.local/delegate/의 "
         "0600 임시 파일로 --file 전달)"
         if harness == "opencode" else None
     )

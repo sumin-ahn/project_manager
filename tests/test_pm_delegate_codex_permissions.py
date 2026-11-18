@@ -492,8 +492,7 @@ def test_dry_run_read_hides_source_git_root_and_keeps_preamble(
 def test_cli_formats_claude_and_opencode_argv_unchanged(pd, tmp_path, role):
     """다른 CLI 형식 argv 는 finalizer 를 지나도 바이트 그대로다(git 조회 없음)."""
     claude = contract.build_claude_argv("opus", "high", role)
-    opencode = contract.build_opencode_argv("prov/m", "high", role, str(tmp_path),
-                                      str(tmp_path / "p.md"))
+    opencode = contract.build_opencode_argv("prov/m", "high", role, str(tmp_path / "p.md"))
     assert delegate_transport._apply_workspace_git_dirs(
         list(claude), delegate_run_rules._READ_TMP_ARGV_MODE_BY_HARNESS["claude"], tmp_path) == claude
     assert delegate_transport._apply_workspace_git_dirs(

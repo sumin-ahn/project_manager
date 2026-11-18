@@ -17,7 +17,7 @@ leak 0)를 커버한다. 비결정·느림·라이브 → release 묶음 와 같
 
 이 파일은 그 외 hermetic env 격리 가드(라이브 미실행·매 회귀 통과)도 보유한다 — 라이브 LLM
 subprocess 가 부모 env 통째 상속이 아니라 화이트리스트(`_live_env`)로 뜨는지 단언한다. **양 harness**
-커버: opencode(로컬/cloud ollama=과금 0·`--dir` 핀)·claude(`claude-sonnet-4-6`·API 과금·cwd 존중).
+커버: opencode(로컬/cloud ollama=과금 0·실행 위치는 자식 cwd)·claude(`claude-sonnet-4-6`·API 과금·cwd 존중).
 남는 사용자 검사는 Windows 플랫폼 특이점(CP949·py 런처·회사 Pro 모델)뿐.
 """
 from __future__ import annotations
@@ -274,7 +274,7 @@ def test_live_opencode_adopter_survives_pm_update_then_operates(harness_tmp_path
     open_dir = dest / ".project_manager" / "wiki" / "tickets" / "open"
     before = {p.name for p in open_dir.glob("T-*.md")}
     proc = subprocess.run(
-        ["opencode", "run", "--agent", "build", "--dir", str(dest), "-m", LIVE_MODEL,
+        ["opencode", "run", "--standalone", "--agent", "build", "-m", LIVE_MODEL,
          _make_prompt("AGENTS.md")],
         cwd=str(dest), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=RUNTIME_TIMEOUT,
         env=_live_env(LIVE_MODEL),
@@ -512,13 +512,13 @@ def _run_opencode_warn(dest: Path, attempts: int = 2) -> str:
     """opencode warn 세션 — 도구 호출로 2번째 모델 턴을 강제(그 턴의 system.transform 이 주입 소비).
 
     opencode 는 수 분 병리적 task hang(upstream·tool-loop 데드락) 이 있어 timeout + 1회 재시도까지만
-    (PM 지침·실측: opencode 1.17.19 + glm-5.2 에서 tool 사용 세션이 0바이트로 걸림·`--pure` 로 플러그인
-    빼도 걸림=upstream·플러그인 무관). 그 hang 이 풀린 환경에서만 이 라이브가 통과한다(default-skip 이라
+    (PM 지침: tool 사용 세션이 0바이트로 걸린 실측이 있고 플러그인을 빼도 걸렸다=upstream·플러그인
+    무관). 그 hang 이 풀린 환경에서만 이 라이브가 통과한다(default-skip 이라
     회귀 무영향). 메커니즘 자체는 Tier1(실제 엔진 hook-context warn2 판정·plugin system.transform 전달)
     + T-0283 로드검사 + claude 라이브(동일 채널·주입-도달 실증)로 커버.
 
-    NOTE(플래그): `--pure` 는 안 쓴다 — `--pure`=external plugin 미로드라 ctx-guard 플러그인(주입 메커니즘
-    자체)이 안 떠 warn 이 뜨지 않는다(실측). 격리는 fresh import adopter + `--dir <절대>`로 충분.
+    NOTE(플래그): 격리는 fresh import adopter 를 자식 cwd 로 두고 이 실행 전용 서버(`--standalone`)로 돌리는
+    것으로 충분하다(ctx-guard 플러그인이 주입 메커니즘 자체라 플러그인은 그대로 싣는다).
     `--format json` 도 안 쓴다 — json 이벤트 스트림이 *user prompt*(sentinel 포함)를 stdout 에 직렬화해
     false-green(주입 아닌 프롬프트 echo 검출) 이 난다(실측). default 포맷은 모델 rendered 응답만 찍어
     sentinel 검출이 곧 모델 도달이다(prompt echo 없음·실측 BASELINE).
@@ -527,7 +527,7 @@ def _run_opencode_warn(dest: Path, attempts: int = 2) -> str:
         "먼저 셸 도구로 `python3 .project_manager/tools/board.py list` 를 실행해 보드를 확인하라. "
         + _WARN_PROBE_TAIL
     )
-    cmd = ["opencode", "run", "--agent", "build", "--dir", str(dest), "-m", LIVE_MODEL, prompt]
+    cmd = ["opencode", "run", "--standalone", "--agent", "build", "-m", LIVE_MODEL, prompt]
     last = ""
     for attempt in range(attempts):
         try:
