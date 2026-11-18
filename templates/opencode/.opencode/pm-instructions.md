@@ -61,8 +61,12 @@ PM(primary)이 내장 `subagent` 도구를 호출한다 — opencode 가 `.openc
 - subagent 의 `permission:`/`model:` (`.opencode/agents/*.md` frontmatter) 가 그대로
   권한·모델을 정한다. `model` 인자는 주지 않는다. 자식 세션은 새 컨텍스트에서 subagent 정의대로
   구동한다.
-- PM 은 `<subagent>` 메시지로 위임 완료를 인지한다. 진행을 묻거나 기다리는 명령을 돌리지 않는다.
-  순차 위임(architect → developer)은 앞 위임의 `<subagent>` 메시지를 받은 뒤 다음을 부른다.
+- PM 은 `<subagent>` 메시지의 state 로 위임 결과를 판정한다. 진행을 묻거나 기다리는 명령을 돌리지 않는다.
+  - `state="completed"` — 완료. 돌려받기와 다음 위임으로 넘어간다.
+  - `state="running"` — 백그라운드 작업이 남았다. 다음 `<subagent>` 메시지를 기다린다(돌려받기·재위임
+    안 함). 자식의 백그라운드 작업(셸 백그라운드 실행 등)이 끝나면 메시지가 한 번 더 온다.
+  - `state="error"`·`state="cancelled"` — 실패.
+  순차 위임(architect → developer)은 앞 위임의 `state="completed"` 메시지를 받은 뒤 다음을 부른다.
 - 자식은 마지막 응답만 돌려준다. 역할 카드의 대형 산출 파일 전달 규약이 이 때문에 필요하다.
 
 ### 2.2 role → `agent` 매핑
@@ -112,7 +116,7 @@ ticket 본문은 다음으로 확인:
 
 손 프롬프트가 없다 — 엔진이 프롬프트 파일·라운드 자리를 만든다. 같은 하네스면 `ticket prepare --cluster
 C-<ticket-group> --role code-reviewer` 가 낸 `prompt` 파일 경로를 `subagent`(`agent: code-reviewer`)에 넘기고
-`<subagent>` 메시지를 받은 뒤 `ticket collect` 로 돌려받는다. `/pm-dev-delegate` 카드의 code-reviewer 위임 절을 따른다.
+`state="completed"` 인 `<subagent>` 메시지를 받은 뒤 `ticket collect` 로 돌려받는다. `/pm-dev-delegate` 카드의 code-reviewer 위임 절을 따른다.
 
 ### 2.6 reviewer 후 PM 처리
 

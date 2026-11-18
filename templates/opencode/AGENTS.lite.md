@@ -106,7 +106,7 @@ bare commit은 남이 stage한 변경도 싣는다. 티켓 이동은 옛·새 �
 ## 9. 막혔을 때 / lazy 참조 (happy-path 밖 → 그때 Read)
 
 - 의존 미완·키 없음 → `board.py block --reason`; 잘못 claim → `board.py unclaim`; 본문 부족 → 보강 후 계속.
-- 위임 실패(`<subagent>` 메시지 state 가 completed 아님 또는 cross exit≠0)·결과 불완전 → 재위임 전 본문·컨텍스트 예산 점검.
+- 위임 실패(`<subagent>` 메시지 state 가 error·cancelled 또는 cross exit≠0. running 은 백그라운드 작업이 남은 것이라 다음 메시지를 기다린다)·결과 불완전 → 재위임 전 본문·컨텍스트 예산 점검.
 - domain 지식 레이어(`domain.py list/affected/capture/lint`, stale 가시화) → full [`AGENTS.md`](AGENTS.md) §10.
 - 묶음 충돌·incident·핸드오프 심층·멀티-PM·결정권한 경계·프레임워크 갱신 → [`pm_role.md`](.project_manager/wiki/pm_role.md)·[`pm_playbook.md`](.project_manager/wiki/pm_playbook.md) Read.
 - 모르는 구조 결정 → `.project_manager/wiki/decisions/`에 ADR.

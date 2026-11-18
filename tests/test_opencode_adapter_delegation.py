@@ -181,6 +181,24 @@ def test_agents_lite_md_documents_subagent_tool_delegation():
     assert "subagent_type" not in text, "AGENTS.lite.md 에 1.x task 도구 인자(subagent_type) 잔존"
 
 
+
+def test_subagent_message_states_guide_collect_and_failure():
+    """`<subagent>` 메시지는 state 로 판정한다.
+
+    opencode 2.x 는 자식에 백그라운드 작업이 남아 있으면 `state="running"` 메시지를 먼저 보내고 그
+    작업이 끝나면 한 번 더 보낸다. 지침은 running 이면 다음 메시지를 기다리고 `state="completed"` 를
+    받은 뒤 돌려받으며, error·cancelled 만 실패로 본다.
+    """
+    text = PM_INSTRUCTIONS_MD.read_text(encoding="utf-8")
+    assert 'state="running"' in text and 'state="completed"' in text, (
+        "pm-instructions.md 가 subagent 메시지 state(running·completed)를 가르지 않음")
+    running_lines = [line for line in text.splitlines() if 'state="running"' in line]
+    assert any("기다" in line for line in running_lines), (
+        f"running 메시지를 받으면 기다린다는 안내가 없음: {running_lines}")
+    lite = AGENTS_LITE_MD.read_text(encoding="utf-8")
+    assert "completed 아님" not in lite, "AGENTS.lite.md 가 running 메시지를 위임 실패로 판정함"
+    assert "error" in lite, "AGENTS.lite.md 위임 실패 판정에 error state 가 없음"
+
 # ── (c) agents/*.md `model:` 토큰 유지 ──────────────────────────────────────
 
 def test_agent_model_token_is_role_scoped():
