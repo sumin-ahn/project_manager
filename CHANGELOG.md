@@ -7,8 +7,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- OpenCode 가드 플러그인(git 명령 검사·위임 채널·ctx 안내·원칙 상기)을 opencode 2.x 플러그인 형식으로 옮겼다. opencode 2.x 는 1.x 형식 플러그인을 싣지 않고 `Plugin must export a default definition with an id and an effect or setup function` 경고만 남겨, 2.x 에서는 슬롯 대상 `git reset --hard`, 위임을 꺼 둔 설치의 서브에이전트 띄우기, 판정을 얻지 못한 도구 호출이 모두 그대로 실행됐다. 이제 네 플러그인은 2.x 정의(`export default { id, setup }`)로 실리고, 판정은 2.x 의 도구 이름과 인자(`shell` 의 `command`·`workdir`, `write`·`edit`·`read` 의 `path`, `patch` 의 `patchText`, `subagent` 의 `agent`)로 돈다. 위임 채널 가드는 서브에이전트 세션이 생기기 전에 판정하고, 거부 문구는 도구 오류로 모델에 보인다. 판정 엔진은 세션의 작업 폴더에서 띄우므로 상주 서비스(`opencode service`)로 돌 때도 상대 경로 명령을 세션 폴더 기준으로 판정한다. 판정을 얻지 못한 도구 호출을 `[git-check/판정 실패]`·`[delegate-channel/판정 실패]` 로 막는 동작은 그대로다. opencode 1.x 는 더 지원하지 않는다.
+- OpenCode ctx 안내는 단계 끝 이벤트(`session.step.ended`)의 토큰(입력·출력·추론·캐시 합)과 단계 시작 이벤트(`session.step.started`)의 모델로 판정하고, 압축은 `session.compaction.ended` 로 본다. 이벤트가 늦게 닿아 안내는 그 단계 뒤 두 번째 모델 호출에 실릴 수 있다.
+- opencode 2.x 서버 플러그인에는 알림 창(toast)이 없어 가드 플러그인의 알림 창 표시를 지웠다. ctx 구간 안내·압축 안내·`[git-check/warn]`·`[git-check/허용]` 은 지금처럼 다음 모델 호출의 시스템 문구로 나간다. 알림 창으로만 보이던 압축 한도 기록 알림(`[ctx-budget] …`, 기록 없음·모델 바뀜)은 같은 문구를 세션에서 한 번 시스템 문구로 싣는다.
+- 엔진 판정의 파일 쓰기·패치 도구 표가 opencode 2.x 이름과 키(`write`·`edit` 의 `path`, `patch` 의 `patchText`)를 쓴다. Codex `apply_patch` 는 그대로다. 엔진 파일만 바뀌므로 이미 설치한 곳은 갱신(`pm_update.py`)으로 반영된다.
+
 ### Removed
 
+- OpenCode safe-write 플러그인의 진입 파일(`.opencode/plugins/safe-write.js`)을 출하에서 뺐다. opencode 2.x 가 이 파일을 싣지 못해 적재 오류를 냈다. `safe_write` 도구는 더 제공되지 않는다. 이미 설치한 곳은 갱신(`pm_update.py`, 관리자 앱 [적용])이 이 파일을 `.pm_import_backups/<날짜>/` 아래로 옮긴다. `.opencode/lib/safe-write-core.cjs` 는 남지만 쓰이지 않는다.
 - OpenCode 어댑터의 stall-watchdog 플러그인(`.opencode/plugins/stall-watchdog.js`·`.opencode/lib/stall-watchdog-core.cjs`)을 지웠다. 세션이 쉬는 상태(`session.idle`)가 될 때 할 일을 남긴 채 턴을 끝낸 것 같다고 판단하면 `[stall-watchdog]` 로 시작하는 안내 문구를 세션에 넣던 플러그인으로, 제대로 동작하지 않고 불편만 줘서 지웠다. 이미 설치한 곳은 갱신(`pm_update.py`, 관리자 앱 [적용])이 두 파일을 `.pm_import_backups/<날짜>/` 아래로 옮긴다. 손으로 고친 사본도 옮기며 원래 내용은 그 백업에 남는다. 실행 중인 OpenCode 는 다시 띄워야 플러그인이 빠진다. 이 플러그인만 읽던 환경 변수 `PM_STALL_WATCHDOG_MAX_CONSEC`·`PM_STALL_WATCHDOG_MAX_TOTAL`·`PM_STALL_WATCHDOG_DISABLED` 는 더 쓰이지 않고, 플러그인이 상태를 적던 `.project_manager/.local/stall-watchdog/` 폴더는 지워도 된다. 위임 실행이 첫 출력 없이 멈추면 끊고 다시 띄우는 엔진의 감시(`PM_OC_FIRST_EVENT_TIMEOUT`·`PM_OC_STALL_RETRIES`)는 그대로다.
 
 ### Fixed

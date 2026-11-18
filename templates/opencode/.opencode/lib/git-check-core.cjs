@@ -1,15 +1,15 @@
 // opencode 일반 도구 호출 판정 경계와 사용자 1회 허용 core.
 // 판정(git·엔진 호출·파일 삭제·도구 입력·ctx·원칙 recall)은 Python 엔진 `board.py hook-tool` 한 번이
-// 한다. 이 모듈은 판정 요청 조립·process 실행·응답 형식 검사·경고 합본과 opencode hook 등록만 소유하고,
-// 명령 문자열을 미리 거르거나 정책을 해석하지 않는다. plugins/ 진입점은 팩토리 하나만 export한다.
+// 한다. 이 모듈은 판정 요청 조립·process 실행·응답 형식 검사·경고 합본과 opencode 훅 등록만 소유하고,
+// 명령 문자열을 미리 거르거나 정책을 해석하지 않는다. plugins/ 진입점은 플러그인 정의 하나만 export 한다.
 //
-// 일반 도구 호출: 모든 도구가 `tool.execute.before` 를 지난다. 그 before 의 등록 소유자는 ctx-guard-core
-// (`createToolBoundary` 소비) 하나이며, 세션의 마지막 토큰 관측을 같은 요청에 실어 Python 을 한 번만
-// 띄운다. git 권한·슬롯 판정에는 SDK 부모를 따라 올라간 최상위 세션 ID 를, ctx·recall 에는 호출한
-// 세션 자신의 ID 를 쓴다.
+// 일반 도구 호출: 모든 도구가 tool `execute.before` 훅을 지난다(이벤트 { tool, sessionID, agent, messageID,
+// id, input }, 실측 opencode 2.3.0). 그 훅의 등록 소유자는 ctx-guard-core(`createToolBoundary` 소비) 하나이며,
+// 세션의 마지막 토큰 관측을 같은 요청에 실어 Python 을 한 번만 띄운다. git 권한·슬롯 판정에는 세션 부모를
+// 따라 올라간 최상위 세션 ID 를, ctx·recall 에는 호출한 세션 자신의 ID 를 쓴다.
 //
-// 사용자 1회 허용: `chat.message`(사용자 메시지 생성 시점 훅·opencode 1.18.30 바이너리의
-// SessionPrompt.createUserMessage 에서 실측)가 사용자가 직접 친 텍스트 조각(synthetic 아님)의
+// 사용자 1회 허용: session `prompt` 훅(사용자 메시지를 세션에 넣기 전, 실측 opencode 2.3.0)이 프롬프트 글
+// `prompt.text`(첨부 파일은 따로 `prompt.files` 로 온다)의
 // `git 허용: <명령 원문>` 줄을 허용 기록으로 남긴다.
 const path = require("node:path");
 const childProcess = require("node:child_process");
@@ -27,9 +27,9 @@ const ENGINE_ROOT = path.resolve(__dirname, "..", "..");
 const GRANT_MARKER = /git[ \t]+허용[ \t]*:/;
 // 판정 응답 stdout 상한(바이트) — 한 줄 JSON 응답이 넘을 수 없는 크기.
 const BOARD_MAX_BUFFER = 1024 * 1024;
-// SDK 세션 조회 1회 제한 시간.
+// 세션 조회 1회 제한 시간.
 const SESSION_LOOKUP_TIMEOUT_MS = 1000;
-// 부모 역조회 방문 상한 — 잘못된 SDK 고리·무한 역조회를 끝내는 자원 경계(정상 깊이 정책 아님).
+// 부모 역조회 방문 상한: 잘못된 부모 고리·무한 역조회를 끝내는 자원 경계(정상 깊이 정책 아님).
 const ROOT_SESSION_VISIT_LIMIT = 32;
 // `hook-tool`·`hook-context` 기계 JSON 버전과 키 집합.
 const WIRE_VERSION = 1;
@@ -47,11 +47,15 @@ function errorText(error) {
 // board.py 하위 명령 1회 실행 — 실행기는 프로세스 없이 고르고, 실행 실패·rc≠0 은 예외로 올린다.
 // 시간 제한(timeout)을 주지 않는다. opencode 가 싣는 Bun 1.3 의 Windows spawnSync 는 시간 제한을 앞
 // spawnSync 가 끝난 시각부터 재므로, 그 뒤 제한보다 오래 쉬었으면 자식을 띄우자마자 끝낸다(ETIMEDOUT).
-function runBoard(root, argv, input, { spawnSync = childProcess.spawnSync, platform = process.platform, env = process.env } = {}) {
+// cwd 는 판정 요청의 상대 경로가 기대는 폴더다. opencode 2.x 상주 서비스의 프로세스 폴더는 세션 폴더가
+// 아니므로(실측 2.3.0: $HOME) 일반 도구 판정은 세션 폴더를 준다.
+function runBoard(root, argv, input, {
+  spawnSync = childProcess.spawnSync, platform = process.platform, env = process.env, cwd,
+} = {}) {
   const python = selectPython(root, { platform, env });
   const board = path.join(root, ".project_manager", "tools", "board.py");
   const result = spawnSync(python.command, [...python.prefixArgs, board, ...argv], {
-    encoding: "utf8", maxBuffer: BOARD_MAX_BUFFER, input,
+    cwd, encoding: "utf8", maxBuffer: BOARD_MAX_BUFFER, input,
   });
   if (!result) throw new Error("board.py 실행 결과 없음");
   if (result.error) throw new Error(`board.py 실행 불가(${errorText(result.error)})`);
@@ -122,7 +126,7 @@ function runHookTool(root, rootSID, value, options = {}) {
   return response;
 }
 
-// 별도 native 이벤트(assistant message.updated·session.compacted)의 ctx 판정 — `hook-context` 1회.
+// 별도 이벤트(session.step.ended·session.compaction.ended)의 ctx 판정: `hook-context` 1회.
 function runHookContext(root, request, options = {}) {
   const { session, ...observation } = request;
   const stdout = runBoard(
@@ -150,44 +154,33 @@ function recordGrants(root, sessionID, cwd, prompt, options = {}) {
   return parsed.granted;
 }
 
-// 사용자가 직접 친 텍스트 조각만 모은다 — synthetic 조각(첨부 파일 내용·도구 안내)은 사용자 입력이 아니다.
-function userPromptText(parts) {
-  if (!Array.isArray(parts)) return "";
-  return parts
-    .filter((part) => part && part.type === "text" && !part.synthetic && typeof part.text === "string")
-    .map((part) => part.text)
-    .join("\n");
-}
-
-// 일반 도구 호출 판정 경계. ctx-guard-core 가 세션 관측(`contextFor`)과 ctx 응답 전달(`acceptContext`)을
-// 넘겨 만든다. 반환은 before(도구 호출 판정)·rootSessionID(SDK 최상위 세션 역조회)·publish/inject
-// (세션별 경고 1칸 채널)다.
+// 일반 도구 호출 판정 경계. ctx-guard-core 가 플러그인 컨텍스트의 세션 도메인(`session`)·세션 폴더
+// (`directory`)와 세션 관측(`contextFor`)·ctx 응답 전달(`acceptContext`)을 넘겨 만든다. 반환은
+// before(도구 호출 판정)·rootSessionID(최상위 세션 역조회)·publish/inject(세션별 경고 1칸 채널)다.
 function createToolBoundary({
-  root = ENGINE_ROOT, client, directory, worktree, contextFor, acceptContext,
+  root = ENGINE_ROOT, session, directory, contextFor, acceptContext,
   spawnSync = childProcess.spawnSync, platform = process.platform,
 }) {
-  const warnings = createWarningChannel(client);
+  const warnings = createWarningChannel();
 
-  // native task 는 자식 세션을 새 ID 로 만든다(실측 opencode 1.18.31 `session.create({parentID})`).
-  // SDK 함수: client.session.get({ path: { id } }) -> { data: Session }. 조회 실패는 삼키지 않고 올린다.
+  // subagent 는 자식 세션을 새 ID 로 만든다. session.get({ sessionID }) -> Session(자식이면 parentID,
+  // 실측 opencode 2.3.0). 조회 실패는 삼키지 않고 올린다.
   async function sessionRecord(id) {
-    if (!client || !client.session || typeof client.session.get !== "function") {
-      throw new Error("SDK client.session.get 없음");
-    }
+    if (!session || typeof session.get !== "function") throw new Error("세션 조회(session.get) 없음");
     let timeoutID;
     const timeout = new Promise((_resolve, reject) => {
       timeoutID = setTimeout(() => reject(new Error(`세션 ${id} 조회 시간 초과`)), SESSION_LOOKUP_TIMEOUT_MS);
     });
     try {
-      const result = await Promise.race([client.session.get({ path: { id } }), timeout]);
-      if (!result || !result.data) throw new Error(`세션 ${id} 조회 결과 없음`);
-      return result.data;
+      const record = await Promise.race([session.get({ sessionID: id }), timeout]);
+      if (!record || typeof record !== "object") throw new Error(`세션 ${id} 조회 결과 없음`);
+      return record;
     } finally {
       clearTimeout(timeoutID);
     }
   }
 
-  // 세션별 역조회 Promise 는 같은 세션의 다음 이벤트가 재사용한다(판정 결과가 아닌 SDK 조회 대장).
+  // 세션별 역조회 Promise 는 같은 세션의 다음 이벤트가 재사용한다(판정 결과가 아닌 세션 조회 대장).
   // 실패한 Promise 는 지워 다음 이벤트가 실제 조회를 다시 한다.
   const rootSessions = new Map();
   function rootSessionID(sessionID) {
@@ -214,12 +207,13 @@ function createToolBoundary({
     return rootSessions.get(sessionID);
   }
 
-  async function before(input, output) {
-    const tool = String((input && input.tool) || "").toLowerCase();
-    const args = (output && output.args) || {};
-    const sessionID = (input && input.sessionID) || "";
+  // tool `execute.before` 이벤트 { tool, sessionID, input }: 던지면 그 호출만 실행되지 않고 문구가 모델에 간다.
+  async function before(event) {
+    const tool = String(event.tool || "").toLowerCase();
+    const args = event.input || {};
+    const sessionID = event.sessionID || "";
     const channel = sessionID || "__global__";
-    const cwd = String(args.workdir || args.cwd || directory || worktree || process.cwd());
+    const cwd = String(args.workdir || directory);
     // 판정을 얻지 못한 호출은 실행하지 않는다 — 세션 확인·판정 실행·응답 형식 어디서 실패해도 같다.
     let rootSID;
     try {
@@ -230,18 +224,18 @@ function createToolBoundary({
     const mainThread = rootSID === sessionID;
     const observed = sessionID && mainThread ? contextFor(sessionID) : null;
     const signal = sessionID ? toolSignal(tool, args) : null;
-    const shell = tool === "bash" && typeof args.command === "string";
+    const shell = tool === "shell" && typeof args.command === "string";
     const request = {
       version: WIRE_VERSION,
       cwd,
       tool_name: tool,
       tool_input: args,
       shell_command: shell ? args.command : null,
-      // 셸 값(그 명령을 실행할 셸). 훅 입력(tool·sessionID·callID·args.command)에는 셸이 없다. Windows 에서는
+      // 셸 값(그 명령을 실행할 셸). 훅 이벤트(tool·sessionID·input.command)에는 셸이 없다. Windows 에서는
       // opencode 가 설정·SHELL·플랫폼 기본값으로 PowerShell·cmd·Git Bash 중 무엇을 고를지 몰라 unknown 을
       // 넘긴다. Windows 가 아니면 cmd 가 없고 bash 문법 셸이 실행한다.
       shell: platform === "win32" ? "unknown" : "bash",
-      // 자식 세션(native task)은 git 판정을 최상위 세션 ID 로 받되 서브에이전트로 판정받는다.
+      // 자식 세션(subagent)은 git 판정을 최상위 세션 ID 로 받되 서브에이전트로 판정받는다.
       main_thread: mainThread,
       context: observed
         ? { session: sessionID, tokens: observed.tokens, model: observed.model, main_thread: true, boundary: null }
@@ -250,7 +244,7 @@ function createToolBoundary({
     };
     let response;
     try {
-      response = runHookTool(root, rootSID, request, { spawnSync, platform });
+      response = runHookTool(root, rootSID, request, { spawnSync, platform, cwd: directory });
     } catch (error) {
       throw noVerdict("git-check", errorText(error));
     }
@@ -262,36 +256,34 @@ function createToolBoundary({
     if (response.context_error) notes.push(`[ctx-guard] 판정 실패(${response.context_error})`);
     if (response.recall_error) notes.push(`[principle-recall] 판정 실패(${response.recall_error})`);
     if (response.recall && response.recall.text) notes.push(response.recall.text);
-    if (notes.length) await warnings.publish(channel, notes.join("\n"));
+    if (notes.length) warnings.publish(channel, notes.join("\n"));
   }
 
   return { before, rootSessionID, publish: warnings.publish, inject: warnings.inject };
 }
 
+// 플러그인 정의 { id, setup }: setup 이 session `prompt`(허용 줄 기록)·`context`(경고 싣기) 훅을 등록한다.
 function makeGitCheckPlugin(recordGrant = recordGrants) {
-  return async ({ client, directory, worktree }) => {
-    const root = ENGINE_ROOT;
-    const warnings = createWarningChannel(client);
-
-    return {
-      "chat.message": async (input, output) => {
-        const prompt = userPromptText(output && output.parts);
+  return {
+    id: "pm.git-check",
+    async setup(ctx) {
+      const root = ENGINE_ROOT;
+      const cwd = ctx.location.directory;
+      const warnings = createWarningChannel();
+      await ctx.session.hook("prompt", async (event) => {
+        const prompt = String(event.prompt.text || "");
         if (!GRANT_MARKER.test(prompt)) return;
-        const sessionID = input && input.sessionID;
-        const cwd = directory || worktree || process.cwd();
-        const granted = await recordGrant(root, sessionID, cwd, prompt);
+        const granted = await recordGrant(root, event.sessionID, cwd, prompt);
         if (granted.length) {
           const listed = granted.map((command) => `\`${command}\``).join(", ");
-          await warnings.publish(
-            sessionID,
+          warnings.publish(
+            event.sessionID,
             `[git-check/허용] 사용자가 폴더 ${cwd} 에서 다음 명령의 1회 실행을 허용했다: ${listed} — 그 명령을 원문 그대로 한 번만 실행한다`,
           );
         }
-      },
-      "experimental.chat.system.transform": async (input, output) => {
-        warnings.inject(input, output);
-      },
-    };
+      });
+      await ctx.session.hook("context", (event) => warnings.inject(event));
+    },
   };
 }
 
@@ -304,6 +296,5 @@ module.exports = {
   runHookTool,
   runHookContext,
   recordGrants,
-  userPromptText,
   SESSION_LOOKUP_TIMEOUT_MS,
 };

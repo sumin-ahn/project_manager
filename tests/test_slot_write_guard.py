@@ -200,7 +200,7 @@ def test_delegated_session_inherits_the_owner_task_todos(home, tmp_path, monkeyp
 @pytest.mark.parametrize(
     ("tool", "key"),
     [("Write", "file_path"), ("Edit", "file_path"), ("NotebookEdit", "notebook_path"),
-     ("write", "filePath"), ("edit", "filePath")],
+     ("write", "path"), ("edit", "path")],
 )
 def test_write_tools_pass_only_in_the_slot_of_the_sessions_task(home, tool, key):
     def judge(session: str, target: Path) -> dict:
@@ -239,12 +239,15 @@ def test_patch_tools_judge_every_file_header(home):
     moved = "*** Begin Patch\n*** Update File: a.py\n*** Move to: ../app_2/a.py\n*** End Patch\n"
     slot_1 = home / "work" / "app_1"
     assert cli_hooks.judge_tool_input(
-        cli_hooks.adapter_home(home), "S-alpha", str(slot_1), "apply_patch", {"patchText": moved}, main_thread=True,
+        cli_hooks.adapter_home(home), "S-alpha", str(slot_1), "patch", {"patchText": moved}, main_thread=True,
     )["verdict"] == "deny"
     inside = "*** Begin Patch\n*** Delete File: old.py\n*** End Patch\n"
     assert cli_hooks.judge_tool_input(
-        cli_hooks.adapter_home(home), "S-alpha", str(slot_1), "apply_patch", {"patchText": inside}, main_thread=True,
+        cli_hooks.adapter_home(home), "S-alpha", str(slot_1), "patch", {"patchText": inside}, main_thread=True,
     )["verdict"] == "ok"
+    # 본문 키는 도구 이름마다 하나다 — 이름과 키가 엇갈린 입력은 대상을 읽지 않는다.
+    assert hooks._write_tool_targets(str(slot_1), "apply_patch", {"patchText": moved}) == []
+    assert hooks._write_tool_targets(str(slot_1), "patch", {"command": moved}) == []
 
 
 def test_delegated_harness_writes_as_the_open_task_it_was_given(home, monkeypatch):
@@ -551,7 +554,7 @@ def test_hook_tool_main_thread_selects_the_slot_guidance(home):
     """`board.py hook-tool` 요청 최상위 `main_thread` 가 슬롯 거부의 다음 행동 줄을 고른다. 키가 없으면 rc 2."""
     request = {
         "version": 1, "cwd": str(home), "tool_name": "write",
-        "tool_input": {"filePath": str(home / "work" / "app_2" / "a.py"), "content": "x"},
+        "tool_input": {"path": str(home / "work" / "app_2" / "a.py"), "content": "x"},
         "shell_command": None, "shell": "unknown", "context": None, "recall": None,
     }
 
@@ -605,21 +608,22 @@ const seen = [];
 const spy = (py, argv, opts) => {
   assert.strictEqual(py, "python3");
   assert.deepStrictEqual(argv, [path.join(root, ".project_manager", "tools", "board.py"), "hook-tool", "--session", "S"]);
-  assert.deepStrictEqual(Object.keys(opts).sort(), ["encoding", "input", "maxBuffer"]);
+  assert.deepStrictEqual(Object.keys(opts).sort(), ["cwd", "encoding", "input", "maxBuffer"]);
+  assert.strictEqual(opts.cwd, "/h");
   const request = JSON.parse(opts.input);
   seen.push([request.tool_name, request.cwd, request.tool_input, request.shell_command]);
   return reply(request.tool_name === "read" ? "ok" : "deny");
 };
-const boundary = m.createToolBoundary({root, directory:"/h", worktree:"/h", spawnSync:spy,
-  client:{tui:{showToast:async () => {}}, session:{get:async ({path}) => ({data:{id:path.id}})}},
+const boundary = m.createToolBoundary({root, directory:"/h", spawnSync:spy,
+  session:{get:async ({sessionID}) => ({id:sessionID})},
   contextFor:() => null, acceptContext:async () => {}});
-const args = {filePath: "/h/work/app_2/a.py"};
-for (const tool of ["write", "edit", "apply_patch"]) {
-  await assert.rejects(boundary.before({tool, sessionID:"S"}, {args}), /\[git-check\/deny\] x/);
+const input = {path: "/h/work/app_2/a.py"};
+for (const tool of ["write", "edit", "patch"]) {
+  await assert.rejects(boundary.before({tool, sessionID:"S", input}), /\[git-check\/deny\] x/);
 }
 // 읽기 도구도 같은 판정 경계를 지난다(선필터 없음) — 판정은 엔진이 한다.
-await boundary.before({tool:"read", sessionID:"S"}, {args});
-assert.deepStrictEqual(seen, ["write", "edit", "apply_patch", "read"].map((tool) => [tool, "/h", args, null]));
+await boundary.before({tool:"read", sessionID:"S", input});
+assert.deepStrictEqual(seen, ["write", "edit", "patch", "read"].map((tool) => [tool, "/h", input, null]));
 console.log("OPENCODE_SLOT_WRITE_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 '''
@@ -631,7 +635,7 @@ console.log("OPENCODE_SLOT_WRITE_OK");
 
 
 def test_opencode_child_session_is_judged_as_its_root_session(tmp_path):
-    """native task 자식 세션(parentID 있음)은 task 를 연 최상위 세션 ID 로, 서브에이전트(main_thread=false)로
+    """subagent 자식 세션(parentID 있음)은 task 를 연 최상위 세션 ID 로, 서브에이전트(main_thread=false)로
     판정받는다. 최상위 세션 자신의 호출은 main_thread=true 다."""
     node = shutil.which("node")
     if node is None:
@@ -646,19 +650,17 @@ const root = process.argv[1];
   const judged = [];
   const recalls = [];
   const threads = [];
-  const boundary = m.createToolBoundary({root, directory: "/h", worktree: "/h",
+  const boundary = m.createToolBoundary({root, directory: "/h",
     spawnSync: (_py, argv, opts) => {
       judged.push(argv[argv.length - 1]);
       recalls.push(JSON.parse(opts.input).recall);
       threads.push(JSON.parse(opts.input).main_thread);
       return reply("ok");
     },
-    client: {
-      tui: {showToast: async () => {}},
-      session: {get: async ({path}) => { lookups.push(path.id); return {data: sessions[path.id]}; }},
-    }, contextFor: () => null, acceptContext: async () => {}});
-  await boundary.before({tool: "write", sessionID: "C"}, {args: {filePath: "/h/work/app_1/a.py"}});
-  await boundary.before({tool: "bash", sessionID: "C"}, {args: {command: "git commit -m x"}});
+    session: {get: async ({sessionID}) => { lookups.push(sessionID); return sessions[sessionID]; }},
+    contextFor: () => null, acceptContext: async () => {}});
+  await boundary.before({tool: "write", sessionID: "C", input: {path: "/h/work/app_1/a.py"}});
+  await boundary.before({tool: "shell", sessionID: "C", input: {command: "git commit -m x"}});
   assert.deepStrictEqual(judged, ["A", "A"]);
   assert.deepStrictEqual(lookups, ["C", "B", "A"]);
   // 원칙 recall 은 호출한 자식 세션 자신의 ID 로, 자식이라 main_thread=false(면제)다.
@@ -667,23 +669,19 @@ const root = process.argv[1];
     {session: "C", on: "shell", text: "git commit -m x", main_thread: false},
   ]);
   assert.deepStrictEqual(threads, [false, false]);
-  await boundary.before({tool: "write", sessionID: "A"}, {args: {filePath: "/h/work/app_1/a.py"}});
+  await boundary.before({tool: "write", sessionID: "A", input: {path: "/h/work/app_1/a.py"}});
   assert.deepStrictEqual(judged, ["A", "A", "A"]);
   assert.deepStrictEqual(threads, [false, false, true]);
 
-  const toasts = [];
-  const failing = m.createToolBoundary({root, directory: "/h", worktree: "/h",
+  const failing = m.createToolBoundary({root, directory: "/h",
     spawnSync: () => { throw new Error("판정까지 오면 안 됨"); },
-    client: {
-      tui: {showToast: async (value) => toasts.push(value)},
-      session: {get: async () => { throw new Error("SDK down"); }},
-    }, contextFor: () => null, acceptContext: async () => {}});
-  await assert.rejects(failing.before({tool: "write", sessionID: "C"}, {args: {filePath: "/h/work/app_1/a.py"}}),
-    /\[git-check\/판정 실패\] .*\(세션 확인 실패: SDK down\)/);
-  const context = {system: []};
-  failing.inject({sessionID: "C"}, context);
+    session: {get: async () => { throw new Error("session down"); }},
+    contextFor: () => null, acceptContext: async () => {}});
+  await assert.rejects(failing.before({tool: "write", sessionID: "C", input: {path: "/h/work/app_1/a.py"}}),
+    /\[git-check\/판정 실패\] .*\(세션 확인 실패: session down\)/);
+  const context = {sessionID: "C", system: []};
+  failing.inject(context);
   assert.deepStrictEqual(context.system, []);
-  assert.deepStrictEqual(toasts, []);
   console.log("OPENCODE_ROOT_SESSION_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 '''

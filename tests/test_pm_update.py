@@ -7540,7 +7540,32 @@ def test_update_moves_removed_stall_watchdog_plugin_out_of_an_opencode_install(t
         backups = sorted((dest / ".pm_import_backups").glob(f"*/{rel}"))
         assert [path.read_text(encoding="utf-8") for path in backups] == [f"// 손으로 고친 옛 사본 {rel}\n"]
     assert sorted(path.name for path in (dest / ".opencode" / "plugins").glob("*.js")) == [
-        "ctx-guard.js", "delegate-channel.js", "git-check.js", "principle-recall.js", "safe-write.js"]
+        "ctx-guard.js", "delegate-channel.js", "git-check.js", "principle-recall.js"]
+
+
+_SAFE_WRITE_ENTRY = ".opencode/plugins/safe-write.js"
+
+
+def test_update_moves_retired_safe_write_entry_out_of_an_opencode_install(tmp_path, monkeypatch):
+    """opencode 2.x 가 적재하지 못하는 safe-write 진입 파일이 남은 설치본은 갱신 한 번으로 그 파일을 잃는다.
+
+    원래 바이트는 백업 폴더(`.pm_import_backups/<날짜>/`)에 남고, core 모듈과 나머지 플러그인은 그대로다."""
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
+    dest = tmp_path / "adopter"
+    _import_adopter(dest, "opencode")
+    old = "// 1.x 형식 진입 파일\n"
+    (dest / _SAFE_WRITE_ENTRY).write_text(old, encoding="utf-8")
+
+    run = _adopter_update(dest)
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    assert not (dest / _SAFE_WRITE_ENTRY).exists()
+    assert f"[퇴역] {_SAFE_WRITE_ENTRY} ->" in run.stdout, run.stdout
+    backups = sorted((dest / ".pm_import_backups").glob(f"*/{_SAFE_WRITE_ENTRY}"))
+    assert [path.read_text(encoding="utf-8") for path in backups] == [old]
+    assert (dest / ".opencode" / "lib" / "safe-write-core.cjs").is_file()
+    assert sorted(path.name for path in (dest / ".opencode" / "plugins").glob("*.js")) == [
+        "ctx-guard.js", "delegate-channel.js", "git-check.js", "principle-recall.js"]
 
 
 # ── T-0951 갱신 절차 전환 — 전달 프로세스(엔진 코드만)와 완료 프로세스(나머지) ──────────────────────

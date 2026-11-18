@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from _opencode_plugin import FAKE_CONTEXT_JS
 from _textio import utf8_child_env
 from pm_engine.cli import hooks as cli_hooks
 from pm_engine.domain import ctx_recovery
@@ -38,9 +39,6 @@ GRANT_MARK = "git " + "\uD5C8\uC6A9" + ":"
 RULES = "#### 번들\n- `[shell: git\\s+status]` 상태 확인 규칙 본문.\n"
 # 판정 경계가 세 하네스 공통으로 원문 전달해야 하는 셸 문자열(선필터가 놓치던 형태 포함).
 UNFILTERED = ["echo ok", "g\\it status", "g\\it restore -- x", "G=git; $G restore -- x", "x=1; echo ok"]
-# 등록 plugin 5개의 lib 모듈.
-PLUGIN_CORES = ("safe-write-core.cjs",)
-
 # node 스크립트 머리 — 모든 Python 실행(spawnSync)을 기록한 뒤 실제로 실행한다. core 를 require 하기
 # 전에 바꿔야 plugin 이 만든 판정 경계도 이 함수를 쓴다.
 SPAWN_SPY = r"""
@@ -51,15 +49,13 @@ childProcess.spawnSync = (command, args, options) => {
   spawned.push({command, args: [...args], input: options && typeof options.input === "string" ? options.input : null});
   return realSpawn(command, args, options);
 };
-const sdk = (sessions = {}) => ({session: {get: async ({path: {id}}) => ({data: sessions[id] || {id}})},
-  tui: {showToast: async () => {}}});
-async function observe(hooks, sessionID, input) {
-  await hooks.event({event: {type: "message.updated", properties: {info: {sessionID, role: "assistant",
-    tokens: {input}}}}});
+const sessionStub = (sessions = {}) => ({get: async ({sessionID}) => sessions[sessionID] || {id: sessionID}});
+async function observe(guard, sessionID, input) {
+  await guard.event(stepEnded(sessionID, {input}));
 }
-async function deliver(hooks, sessionID) {
+async function deliver(handler, sessionID) {
   const output = {system: []};
-  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  await deliverTo(handler, sessionID, output);
   return output.system;
 }
 const requestOf = (launch) => JSON.parse(launch.input);
@@ -69,8 +65,6 @@ const requestOf = (launch) => JSON.parse(launch.input);
 def _project(tmp_path: Path) -> Path:
     """실제 엔진·lib 사본·OpenCode 압축 한도 기록·원칙 규칙을 갖춘 설치 구성 루트."""
     root = _make_ctx_guard_project(tmp_path)
-    for name in PLUGIN_CORES:
-        shutil.copyfile(CORE_DIR / name, root / ".opencode" / "lib" / name)
     install_ctx_record(root, harness="opencode")
     wiki = root / ".project_manager" / "wiki"
     wiki.mkdir(parents=True, exist_ok=True)
@@ -79,7 +73,7 @@ def _project(tmp_path: Path) -> Path:
 
 
 def _node(root: Path, script: str, *args: str) -> dict:
-    result = subprocess.run([NODE, "-e", SPAWN_SPY + script, str(root), *args],
+    result = subprocess.run([NODE, "-e", FAKE_CONTEXT_JS + SPAWN_SPY + script, str(root), *args],
                             cwd=root / ".opencode" / "lib", capture_output=True, text=True,
                             encoding="utf-8", timeout=120)
     assert result.returncode == 0, result.stderr
@@ -106,7 +100,7 @@ def test_hook_tool_json_contract_and_failures(tmp_path):
     """8키 요청·6키 응답·ctx 11키·UTF-8/LF·rc 와 형식 오류·설정 오류·거부 우선, JS 소비자의 형식 검사."""
     root = _project(tmp_path)
     context = {"session": "native", "tokens": 156_000, "model": None, "main_thread": True, "boundary": None}
-    request = {"version": 1, "cwd": str(root), "tool_name": "bash", "tool_input": {"command": "git status"},
+    request = {"version": 1, "cwd": str(root), "tool_name": "shell", "tool_input": {"command": "git status"},
                "shell_command": "git status", "shell": "unknown", "main_thread": True, "context": context,
                "recall": {"session": "native", "on": "shell", "text": "git status", "main_thread": True}}
     ok = _hook_tool(root, request)
@@ -148,7 +142,7 @@ def test_hook_tool_json_contract_and_failures(tmp_path):
 
     denied = json.loads(_hook_tool(root, {
         "version": 1, "cwd": str(root), "tool_name": "write",
-        "tool_input": {"filePath": "notes.md", "content": f"{GRANT_MARK} git push\n"}, "shell_command": None, "shell": "unknown", "main_thread": True,
+        "tool_input": {"path": "notes.md", "content": f"{GRANT_MARK} git push\n"}, "shell_command": None, "shell": "unknown", "main_thread": True,
         "context": {**context, "session": "deny"},
         "recall": {"session": "deny", "on": "edit", "text": "notes.md", "main_thread": True}}).stdout)
     assert denied["git"]["verdict"] == "deny"
@@ -200,7 +194,7 @@ console.log(JSON.stringify({failures, level: real.context.level, launches: launc
 
 
 def test_registered_before_starts_python_once(tmp_path):
-    """등록 5 plugin 의 before 전체를 도구 5종에 실행하면 관측 전후 모두 Python 은 정확히 한 번이다."""
+    """등록 4 plugin 의 before 전체를 도구 5종에 실행하면 관측 전후 모두 Python 은 정확히 한 번이다."""
     root = _project(tmp_path)
     (root / "README.md").write_text("a\n", encoding="utf-8")
     script = r"""
@@ -211,22 +205,21 @@ const ctx = require("./ctx-guard-core.cjs");
 const git = require("./git-check-core.cjs");
 const principle = require("./principle-recall-core.cjs");
 const delegate = require("./delegate-channel-core.cjs");
-const safe = require("./safe-write-core.cjs");
-const schema = new Proxy(function () {}, {get: () => schema, apply: () => schema});
-const tool = Object.assign((definition) => definition, {schema});
 (async () => {
-  const client = sdk();
-  const input = {client, directory: root, worktree: root};
-  const plugins = [await ctx.CtxGuardPlugin(input), await git.GitCheckPlugin(input),
-    await principle.PrincipleRecallPlugin(input), await delegate.DelegateChannelPlugin(input),
-    await safe.makeSafeWritePlugin(tool)(input)];
-  const befores = plugins.map((plugin) => plugin["tool.execute.before"]).filter(Boolean);
+  const contexts = [ctx.CtxGuardPlugin, git.GitCheckPlugin, principle.PrincipleRecallPlugin,
+    delegate.DelegateChannelPlugin].map(() => fakeContext({directory: root}));
+  await ctx.CtxGuardPlugin.setup(contexts[0].ctx);
+  await git.GitCheckPlugin.setup(contexts[1].ctx);
+  await principle.PrincipleRecallPlugin.setup(contexts[2].ctx);
+  await delegate.DelegateChannelPlugin.setup(contexts[3].ctx);
+  const befores = contexts.map(({hooks}) => hooks.tool["execute.before"]).filter(Boolean);
+  const guard = ctx.createCtxGuard({location: {directory: root}, session: sessionStub()});
   const calls = {
-    read: {filePath: path.join(root, "README.md")},
-    bash: {command: "echo ok"},
-    write: {filePath: path.join(root, "notes.md"), content: "hello"},
-    edit: {filePath: path.join(root, "README.md"), oldString: "a", newString: "b"},
-    apply_patch: {patchText: "*** Begin Patch\n*** Add File: notes2.md\n+x\n*** End Patch\n"},
+    read: {path: path.join(root, "README.md")},
+    shell: {command: "echo ok"},
+    write: {path: path.join(root, "notes.md"), content: "hello"},
+    edit: {path: path.join(root, "README.md"), oldString: "a", newString: "b"},
+    patch: {patchText: "*** Begin Patch\n*** Add File: notes2.md\n+x\n*** End Patch\n"},
   };
   const errors = [];
   async function runAll(phase) {
@@ -235,7 +228,7 @@ const tool = Object.assign((definition) => definition, {schema});
       const start = spawned.length;
       for (const before of befores) {
         try {
-          await before({tool: toolName, sessionID: "ses_once", callID: "c"}, {args: {...args}});
+          await before(toolEvent(toolName, "ses_once", {...args}));
         } catch (error) {
           errors.push(`${phase}/${toolName}: ${error.message}`);
         }
@@ -248,13 +241,14 @@ const tool = Object.assign((definition) => definition, {schema});
     return rows;
   }
   const beforeObservation = await runAll("before");
-  await observe(plugins[0], "ses_once", 100000);
+  befores[0] = guard.before;
+  await observe(guard, "ses_once", 100000);
   const afterObservation = await runAll("after");
   console.log(JSON.stringify({befores: befores.length, errors, beforeObservation, afterObservation}));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 """
     result = _node(root, script)
-    assert result["befores"] == 3  # ctx(판정 경계)·delegate(task 전용)·safe-write(native 크기 검사)
+    assert result["befores"] == 2  # ctx(판정 경계)·delegate(subagent 전용)
     assert result["errors"] == []
     for phase, expected_context in (("beforeObservation", None), ("afterObservation", 100_000)):
         for tool_name, row in result[phase].items():
@@ -267,7 +261,8 @@ const tool = Object.assign((definition) => definition, {schema});
 
 
 def test_native_context_policy_and_delivery(tmp_path):
-    """엔진 판정 그대로 — warn2·final 독립, 0 은 다시 켜지 않음·양수 ok 는 다시 켬, 재시작·다른 process 억제, 불능 notice."""
+    """엔진 판정 그대로 — warn2·final 독립, 0 은 다시 켜지 않음·양수 ok 는 다시 켬, 재시작·다른 process 억제,
+    한도 기록 불능 알림은 시스템 문구 한 번."""
     root = _project(tmp_path)
     script = r"""
 const fs = require("node:fs");
@@ -275,9 +270,7 @@ const path = require("node:path");
 const root = process.argv[1];
 const ctx = require("./ctx-guard-core.cjs");
 (async () => {
-  const toasts = [];
-  const client = {...sdk(), tui: {showToast: async (toast) => { toasts.push(toast.body.message); }}};
-  const make = () => ctx.CtxGuardPlugin({client, directory: root});
+  const make = () => ctx.createCtxGuard({location: {directory: root}, session: sessionStub()});
   const hooks = await make();
   const sid = "ses_policy";
   const out = {};
@@ -290,7 +283,6 @@ const ctx = require("./ctx-guard-core.cjs");
   fs.unlinkSync(path.join(root, ".project_manager", ".local", "ctx-budget.json"));
   await observe(hooks, "ses_notice", 150000); await observe(hooks, "ses_notice", 150000);
   out.notice = await deliver(hooks, "ses_notice");
-  out.budgetToasts = toasts.filter((text) => text.startsWith("[ctx-budget]"));
   console.log(JSON.stringify(out));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 """
@@ -301,14 +293,14 @@ const ctx = require("./ctx-guard-core.cjs");
     assert result["afterZero"] == [], "미측정 0 이 구간을 다시 켰다"
     assert result["afterOk"] == [_guidance("warn2", 78)], "양수 ok 관측이 구간을 다시 켜지 않았다"
     assert result["restarted"] == [], "plugin 재시작이 같은 세션 구간을 다시 냈다"
-    assert result["notice"] == []
-    assert len(result["budgetToasts"]) == 1 and "`pm_config.py apply`" in result["budgetToasts"][0]
+    assert len(result["notice"]) == 1, result["notice"]
+    assert result["notice"][0].startswith("[ctx-budget] ") and "`pm_config.py apply`" in result["notice"][0]
 
     (root / ".project_manager" / ".local" / "ctx-budget.json").write_bytes(budget)
     other = _node(root, r"""
 const ctx = require("./ctx-guard-core.cjs");
 (async () => {
-  const hooks = await ctx.CtxGuardPlugin({client: sdk(), directory: process.argv[1]});
+  const hooks = ctx.createCtxGuard({location: {directory: process.argv[1]}, session: sessionStub()});
   await observe(hooks, "ses_policy", 156000);
   console.log(JSON.stringify({delivered: await deliver(hooks, "ses_policy")}));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
@@ -317,7 +309,7 @@ const ctx = require("./ctx-guard-core.cjs");
 
 
 def test_epoch_and_session_ownership(tmp_path):
-    """늦은 SDK·압축 교차와 event-local SID, 자식 면제, git 최상위 SID·recall native SID, SDK 실패 경고."""
+    """늦은 세션 조회·압축 교차와 event-local SID, 자식 면제, git 최상위 SID·recall 자기 SID, 세션 조회 실패 경고."""
     root = _project(tmp_path)
     script = r"""
 const ctx = require("./ctx-guard-core.cjs");
@@ -326,12 +318,12 @@ const root = process.argv[1];
   const out = {};
   let release;
   const pending = new Promise((resolve) => { release = resolve; });
-  const late = await ctx.CtxGuardPlugin({directory: root, client: {
-    session: {get: async ({path: {id}}) => { await pending; return {data: {id}}; }}, tui: {showToast: async () => {}}}});
+  const late = ctx.createCtxGuard({location: {directory: root},
+    session: {get: async ({sessionID}) => { await pending; return {id: sessionID}; }}});
   let start = spawned.length;
   const message = observe(late, "ses_late", 156000);
   await new Promise((resolve) => setImmediate(resolve));
-  const compaction = late.event({event: {type: "session.compacted", properties: {sessionID: "ses_late"}}});
+  const compaction = late.event(compactionEnded("ses_late"));
   await new Promise((resolve) => setImmediate(resolve));
   release();
   await message;
@@ -340,37 +332,37 @@ const root = process.argv[1];
     .map((launch) => requestOf(launch));
   out.lateDelivered = await deliver(late, "ses_late");
 
-  const pair = await ctx.CtxGuardPlugin({directory: root, client: sdk()});
+  const pair = ctx.createCtxGuard({location: {directory: root}, session: sessionStub()});
   await Promise.all([observe(pair, "ses_a", 156000), observe(pair, "ses_b", 150000)]);
   out.pair = {a: await deliver(pair, "ses_a"), b: await deliver(pair, "ses_b")};
 
-  const family = await ctx.CtxGuardPlugin({directory: root, client: sdk({
+  const family = ctx.createCtxGuard({location: {directory: root}, session: sessionStub({
     ses_child: {id: "ses_child", parentID: "ses_parent"}, ses_parent: {id: "ses_parent"}})});
   start = spawned.length;
   await observe(family, "ses_child", 190000);
-  await family.event({event: {type: "session.compacted", properties: {sessionID: "ses_child"}}});
+  await family.event(compactionEnded("ses_child"));
   out.childDelivered = await deliver(family, "ses_child");
   out.childLaunches = spawned.length - start;
   start = spawned.length;
-  await family["tool.execute.before"]({tool: "bash", sessionID: "ses_child"}, {args: {command: "git status"}});
+  await family.before(toolEvent("shell", "ses_child", {command: "git status"}));
   const childTool = spawned.slice(start);
   out.childTool = {count: childTool.length, session: childTool[0].args.slice(-1)[0], request: requestOf(childTool[0])};
 
   const failures = {};
   const chain = {};
   for (let index = 0; index < 40; index += 1) chain[`deep_${index}`] = {id: `deep_${index}`, parentID: `deep_${index + 1}`};
-  const clients = {
-    error: {session: {get: async () => { throw new Error("SDK down"); }}},
-    cycle: sdk({ses_x: {id: "ses_x", parentID: "ses_y"}, ses_y: {id: "ses_y", parentID: "ses_x"}}),
-    deep: sdk(chain),
+  const stubs = {
+    error: {get: async () => { throw new Error("session down"); }},
+    cycle: sessionStub({ses_x: {id: "ses_x", parentID: "ses_y"}, ses_y: {id: "ses_y", parentID: "ses_x"}}),
+    deep: sessionStub(chain),
   };
   const sids = {error: "ses_err", cycle: "ses_x", deep: "deep_0"};
-  for (const [name, client] of Object.entries(clients)) {
-    const hooks = await ctx.CtxGuardPlugin({directory: root, client: {...client, tui: {showToast: async () => {}}}});
+  for (const [name, session] of Object.entries(stubs)) {
+    const hooks = ctx.createCtxGuard({location: {directory: root}, session});
     start = spawned.length;
     let blocked = null;
     try {
-      await hooks["tool.execute.before"]({tool: "bash", sessionID: sids[name]}, {args: {command: "git status"}});
+      await hooks.before(toolEvent("shell", sids[name], {command: "git status"}));
     } catch (error) {
       blocked = error.message;
     }
@@ -392,13 +384,13 @@ const root = process.argv[1];
     assert result["childTool"]["request"]["context"] is None
     assert result["childTool"]["request"]["recall"] == {"session": "ses_child", "on": "shell", "text": "git status",
                                                         "main_thread": False}
-    expected = {"error": "SDK down", "cycle": "세션 부모 고리", "deep": "세션 부모 역조회 32개 초과"}
+    expected = {"error": "session down", "cycle": "세션 부모 고리", "deep": "세션 부모 역조회 32개 초과"}
     for name, needle in expected.items():
         failure = result["failures"][name]
         assert failure["launches"] == 0, (name, failure)
         assert failure["blocked"].startswith("[git-check/판정 실패] ") and needle in failure["blocked"], (name, failure)
         assert len(failure["delivered"]) == 1 and needle in failure["delivered"][0], (name, failure)
-        assert "[ctx-warn" not in failure["delivered"][0], "SDK 불능을 main 으로 처리했다"
+        assert "[ctx-warn" not in failure["delivered"][0], "세션 조회 불능을 main 으로 처리했다"
 
 
 def _load(path: Path, name: str):
@@ -433,19 +425,19 @@ const assert = require("node:assert");
 const ctx = require("./ctx-guard-core.cjs");
 const [root, commandsText, grantMark] = process.argv.slice(1);
 (async () => {
-  const hooks = await ctx.CtxGuardPlugin({client: sdk(), directory: root});
+  const hooks = ctx.createCtxGuard({location: {directory: root}, session: sessionStub()});
   const shell = [];
   for (const command of JSON.parse(commandsText)) {
     const start = spawned.length;
-    await hooks["tool.execute.before"]({tool: "bash", sessionID: "ses_raw"}, {args: {command}});
+    await hooks.before(toolEvent("shell", "ses_raw", {command}));
     const launches = spawned.slice(start);
     shell.push({count: launches.length, shell: requestOf(launches[0]).shell_command});
   }
   const start = spawned.length;
   let denied = null;
   try {
-    await hooks["tool.execute.before"]({tool: "task", sessionID: "ses_raw"},
-      {args: {subagent_type: "developer", prompt: grantMark.replace(" ", "\t") + " git status"}});
+    await hooks.before(toolEvent("subagent", "ses_raw",
+      {agent: "developer", description: "d", prompt: grantMark.replace(" ", "\t") + " git status"}));
   } catch (error) {
     denied = error.message;
   }
@@ -480,9 +472,9 @@ const markers = path.join(root, ".project_manager", ".local", "ctx-stop");
 const listing = (prefix) => fs.readdirSync(markers).filter((name) => name.startsWith(prefix)).sort();
 (async () => {
   const sid = "ses_snap";
-  const hooks = await ctx.CtxGuardPlugin({client: sdk(), directory: root});
+  const hooks = ctx.createCtxGuard({location: {directory: root}, session: sessionStub()});
   const start = spawned.length;
-  await hooks.event({event: {type: "session.compacted", properties: {sessionID: sid}}});
+  await hooks.event(compactionEnded(sid));
   const launches = spawned.slice(start);
   const contextLaunch = launches.find((launch) => launch.args.includes("hook-context"));
   const own = listing(`compact-snapshot.${sid}.`);
@@ -490,7 +482,7 @@ const listing = (prefix) => fs.readdirSync(markers).filter((name) => name.starts
   fs.writeFileSync(path.join(markers, foreign), "foreign\r\n");
   const first = await deliver(hooks, sid);
   const afterFirst = listing(`compact-snapshot.${sid}.`);
-  const restarted = await ctx.CtxGuardPlugin({client: sdk(), directory: root});
+  const restarted = ctx.createCtxGuard({location: {directory: root}, session: sessionStub()});
   const second = await deliver(restarted, sid);
   const third = await deliver(restarted, sid);
   console.log(JSON.stringify({
@@ -533,7 +525,7 @@ def test_adapters_pass_the_shell_that_runs_the_command(tmp_path, monkeypatch):
     """어댑터는 그 명령을 실행할 셸을 셸 값으로 넘긴다.
 
     Claude 는 도구 이름으로 정한다(``Bash`` 는 Windows 에서도 Git Bash, ``PowerShell`` 은 PowerShell). Codex·OpenCode 는
-    훅 입력에 셸이 없어 Windows 에서는 ``unknown``, 그 밖의 OS 에서는 ``bash`` 를 넘긴다(값은 판정을 부를 때의
+    도구 입력에 셸이 없어 Windows 에서는 ``unknown``, 그 밖의 OS 에서는 ``bash`` 를 넘긴다(값은 판정을 부를 때의
     실행 OS 로 정한다). Claude git 명령 검사 matcher 는 셸 값을 정하는 도구 이름을 모두 담는다."""
     root = _project(tmp_path)
     shells = []
@@ -574,9 +566,9 @@ const [root, platform] = process.argv.slice(1);
 Object.defineProperty(process, "platform", {value: platform});
 const ctx = require("./ctx-guard-core.cjs");
 (async () => {
-  const hooks = await ctx.CtxGuardPlugin({client: sdk(), directory: root});
+  const hooks = ctx.createCtxGuard({location: {directory: root}, session: sessionStub()});
   const start = spawned.length;
-  await hooks["tool.execute.before"]({tool: "bash", sessionID: "ses_shell"}, {args: {command: "git status"}});
+  await hooks.before(toolEvent("shell", "ses_shell", {command: "git status"}));
   const launches = spawned.slice(start);
   console.log(JSON.stringify({count: launches.length, shell: requestOf(launches[0]).shell}));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
@@ -591,9 +583,9 @@ const reply = (result) => () => result;
 const goodReply = {version: 1, git: {verdict: "ok", cwd_identity: "non-repo", reason: "x"}, context: null,
   context_error: null, recall: null, recall_error: null};
 const stdoutOf = (value) => ({status: 0, signal: null, stdout: value, stderr: ""});
-async function attempt(before, sessionID, tool, args) {
+async function attempt(before, sessionID, tool, input) {
   try {
-    await before({tool, sessionID, callID: "c"}, {args});
+    await before(toolEvent(tool, sessionID, input));
     return {ran: true, error: null};
   } catch (error) {
     return {ran: false, error: error.message};
@@ -627,26 +619,27 @@ const root = process.argv[1];
   };
   const out = {};
   for (const [name, spawnSync] of Object.entries(cases)) {
-    const published = [];
-    const session = name === "session" ? {get: async () => { throw new Error("SDK down"); }} : sdk().session;
-    const boundary = git.createToolBoundary({root, directory: root, worktree: root, spawnSync,
-      client: {session, tui: {showToast: async ({body}) => { published.push(body.message); }}},
+    const session = name === "session" ? {get: async () => { throw new Error("session down"); }} : sessionStub();
+    const boundary = git.createToolBoundary({root, directory: root, spawnSync, session,
       contextFor: () => null, acceptContext: async () => {}});
-    out[name] = {...(await attempt(boundary.before, "ses_fail", "bash", {command: "git status"})), published};
+    const row = await attempt(boundary.before, "ses_fail", "shell", {command: "git status"});
+    const delivered = contextEvent("ses_fail");
+    boundary.inject(delivered);
+    out[name] = {...row, published: systemTexts(delivered)};
   }
   // 등록된 before(실제 실행 경로): local.conf 의 실행기가 없으면 판정 프로세스를 못 띄워 막는다(읽기 도구도 같다).
-  const hooks = await ctx.CtxGuardPlugin({client: sdk(), directory: root});
+  const hooks = await setupPlugin(ctx.CtxGuardPlugin, {directory: root});
   const start = spawned.length;
-  out.registered = await attempt(hooks["tool.execute.before"], "ses_fail", "read", {filePath: "README.md"});
+  out.registered = await attempt(hooks.tool["execute.before"], "ses_fail", "read", {path: "README.md"});
   out.registered.launches = spawned.length - start;
-  out.registered.published = await deliver(hooks, "ses_fail");
+  out.registered.published = await deliver(hooks.session, "ses_fail");
   console.log(JSON.stringify(out));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 """
     result = _node(root, script)
     causes = {"launch": "ENOENT", "startTimeout": "ETIMEDOUT", "rc": "엔진 오류", "noResult": "실행 결과 없음",
               "notLine": "JSON 한 줄이 아님", "keys": "키 집합이 다름", "verdict": "git 판정 형식 불명",
-              "session": "SDK down", "registered": "no-such-python"}
+              "session": "session down", "registered": "no-such-python"}
     for name, cause in causes.items():
         row = result[name]
         assert row["ran"] is False, (name, row)
@@ -671,15 +664,15 @@ const [root, grantMark] = process.argv.slice(1);
     }
     return childProcess.spawnSync(command, args, options);
   };
-  const boundary = git.createToolBoundary({root, directory: root, worktree: root, spawnSync: failOnce, client: sdk(),
+  const boundary = git.createToolBoundary({root, directory: root, spawnSync: failOnce, session: sessionStub(),
     contextFor: () => null, acceptContext: async () => {}});
   const out = {};
   const forged = {command: `echo '${grantMark} git push'`};
-  out.denyFirst = await attempt(boundary.before, "ses_rerun", "bash", forged);
-  out.denySecond = await attempt(boundary.before, "ses_rerun", "bash", forged);
+  out.denyFirst = await attempt(boundary.before, "ses_rerun", "shell", forged);
+  out.denySecond = await attempt(boundary.before, "ses_rerun", "shell", forged);
   calls = 0;
-  out.okFirst = await attempt(boundary.before, "ses_rerun", "bash", {command: "echo ok"});
-  out.okSecond = await attempt(boundary.before, "ses_rerun", "bash", {command: "echo ok"});
+  out.okFirst = await attempt(boundary.before, "ses_rerun", "shell", {command: "echo ok"});
+  out.okSecond = await attempt(boundary.before, "ses_rerun", "shell", {command: "echo ok"});
   console.log(JSON.stringify(out));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 """
@@ -718,7 +711,7 @@ def test_judge_success_unchanged(tmp_path):
     막음. 앞 판정 뒤 10초 넘게 쉬어도(Windows 런타임 결함 조건) 판정·ctx 판정·허용 기록을 그대로 얻는다."""
     root = _project(tmp_path)
     warn_command = "git -C $HOME status"
-    warn_request = {"version": 1, "cwd": str(root), "tool_name": "bash", "tool_input": {"command": warn_command},
+    warn_request = {"version": 1, "cwd": str(root), "tool_name": "shell", "tool_input": {"command": warn_command},
                     "shell_command": warn_command, "shell": "bash", "main_thread": True, "context": None,
                     "recall": None}
     engine_warn = json.loads(_hook_tool(root, warn_request).stdout)["git"]
@@ -728,28 +721,26 @@ const ctx = require("./ctx-guard-core.cjs");
 const git = require("./git-check-core.cjs");
 const [root, grantMark, warnCommand] = process.argv.slice(1);
 (async () => {
-  const toasts = [];
-  const client = {...sdk(), tui: {showToast: async ({body}) => { toasts.push(body.message); }}};
-  const hooks = await ctx.CtxGuardPlugin({client, directory: root});
-  const before = hooks["tool.execute.before"];
+  const hooks = ctx.createCtxGuard({location: {directory: root}, session: sessionStub()});
+  const before = hooks.before;
   const out = {};
   const start = spawned.length;
-  out.ok = await attempt(before, "ses_same", "bash", {command: "echo ok"});
+  out.ok = await attempt(before, "ses_same", "shell", {command: "echo ok"});
   out.okDelivered = await deliver(hooks, "ses_same");
   idle(11000);
-  out.warn = await attempt(before, "ses_same", "bash", {command: warnCommand});
+  out.warn = await attempt(before, "ses_same", "shell", {command: warnCommand});
   out.warnDelivered = await deliver(hooks, "ses_same");
   idle(11000);
-  out.deny = await attempt(before, "ses_same", "bash", {command: `echo '${grantMark} git push'`});
+  out.deny = await attempt(before, "ses_same", "shell", {command: `echo '${grantMark} git push'`});
   idle(11000);
   await observe(hooks, "ses_same", 156000);
   out.ctxDelivered = await deliver(hooks, "ses_same");
   idle(11000);
-  const grants = await git.GitCheckPlugin({client, directory: root, worktree: root});
-  await grants["chat.message"]({sessionID: "ses_same"}, {parts: [{type: "text", text: `${grantMark} git status`}]});
+  const grants = await setupPlugin(git.GitCheckPlugin, {directory: root});
+  await grants.session.prompt(promptEvent("ses_same", `${grantMark} git status`));
   out.launches = spawned.slice(start).map((launch) => launch.args.find((arg) => arg.startsWith("hook-")
     || arg === "git-grant"));
-  out.toasts = toasts;
+  out.grantDelivered = await deliver(grants.session, "ses_same");
   console.log(JSON.stringify(out));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 """
@@ -760,7 +751,7 @@ const [root, grantMark, warnCommand] = process.argv.slice(1);
     assert result["deny"]["ran"] is False and result["deny"]["error"].startswith("[git-check/deny] 다른 명령으로")
     assert result["ctxDelivered"] == [_guidance("warn2", 78)]
     assert result["launches"] == ["hook-tool", "hook-tool", "hook-tool", "hook-context", "git-grant"]
-    assert any(text.startswith("[git-check/허용] ") for text in result["toasts"])
+    assert any(text.startswith("[git-check/허용] ") for text in result["grantDelivered"])
 
 
 def test_plugin_process_runs_get_results_after_idle_gap(tmp_path):
@@ -782,20 +773,18 @@ const recall = require("./principle-recall-core.cjs");
 const ctx = require("./ctx-guard-core.cjs");
 const root = process.argv[1];
 (async () => {
-  const client = sdk();
   const out = {};
-  const delegation = await delegate.DelegateChannelPlugin({client, directory: root, worktree: root});
-  const before = delegation["tool.execute.before"];
-  const task = {subagent_type: "developer", description: "d", prompt: "p"};
-  out.delegateFirst = await attempt(before, "ses_idle", "task", task);
+  const delegation = await setupPlugin(delegate.DelegateChannelPlugin, {directory: root});
+  const before = delegation.tool["execute.before"];
+  const task = {agent: "developer", description: "d", prompt: "p"};
+  out.delegateFirst = await attempt(before, "ses_idle", "subagent", task);
   idle(11000);
-  out.delegateIdle = await attempt(before, "ses_idle", "task", task);
-  out.delegateDelivered = await deliver(delegation, "ses_idle");
-  const recaller = await recall.PrincipleRecallPlugin({client});
+  out.delegateIdle = await attempt(before, "ses_idle", "subagent", task);
+  out.delegateDelivered = await deliver(delegation.session, "ses_idle");
+  const recaller = await setupPlugin(recall.PrincipleRecallPlugin, {directory: root});
   idle(11000);
-  await recaller.event({event: {type: "message.updated", properties: {info: {sessionID: "ses_idle", role: "user",
-    text: "release now"}}}});
-  out.recallDelivered = await deliver(recaller, "ses_idle");
+  await recaller.session.prompt(promptEvent("ses_idle", "release now"));
+  out.recallDelivered = await deliver(recaller.session, "ses_idle");
   idle(4000);
   out.snapshot = ctx.buildCompactionSnapshot(root, "ses_idle");
   idle(6000);

@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+from _opencode_plugin import FAKE_CONTEXT_JS
+
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
 PM_PRINCIPLES_PY = TOOLS / "pm_principles.py"
@@ -553,7 +555,7 @@ def test_opencode_principle_recall_core_requires_cleanly_in_node():
 
 
 def test_opencode_principle_recall_core_pure_functions_selfcheck():
-    """toolSignal/extractPromptText 순수함수를 opencode 런타임 없이 검증(node)."""
+    """toolSignal 순수함수와 플러그인 정의 모양을 opencode 런타임 없이 검증(node)."""
     if _NODE is None:
         pytest.skip("node 없음 — 순수 로직 자가검증 skip(정적 검증만 적용)")
     script = r"""
@@ -561,25 +563,22 @@ const m = require("./principle-recall-core.cjs");
 const assert = require("node:assert");
 
 assert.deepStrictEqual(
-  m.toolSignal("Bash", {command: "git push"}),
+  m.toolSignal("shell", {command: "git push"}),
   {on: "shell", text: "git push"},
 );
 assert.deepStrictEqual(
-  m.toolSignal("edit", {filePath: "tests/test_x.py"}),
+  m.toolSignal("edit", {path: "tests/test_x.py"}),
   {on: "edit", text: "tests/test_x.py"},
 );
 assert.deepStrictEqual(
-  m.toolSignal("task", {subagent_type: "developer"}),
+  m.toolSignal("subagent", {agent: "developer"}),
   {on: "delegate", text: "developer"},
 );
 assert.strictEqual(m.toolSignal("read", {}), null);
-assert.strictEqual(m.extractPromptText({text: "direct"}), "direct");
-assert.strictEqual(
-  m.extractPromptText({parts: [{text: "a"}, {text: "b"}]}),
-  "a\nb",
-);
-assert.strictEqual(m.extractPromptText({}), "");
+assert.strictEqual(m.extractPromptText, undefined);
 assert.strictEqual(typeof m.makePrincipleRecallPlugin, "function");
+assert.strictEqual(m.PrincipleRecallPlugin.id, "pm.principle-recall");
+assert.strictEqual(typeof m.PrincipleRecallPlugin.setup, "function");
 console.log("SELFCHECK_OK");
 """
     out = _run_node_check(script)
@@ -588,7 +587,7 @@ console.log("SELFCHECK_OK");
 
 def test_opencode_principle_recall_core_fires_suppresses_and_resets_on_compaction(tmp_path):
     """실 python subprocess(board.py hook-tool/hook-context) 를 통한 값 사이클 — 출력 → 같은 세션
-    재호출 억제(marker dedup) → `session.compacted` 다시 켜기 → 재출력. 순수함수 자가검증과 달리
+    재호출 억제(marker dedup) → `session.compaction.ended` 다시 켜기 → 재출력. 순수함수 자가검증과 달리
     마커 파일 IO 를 실제로 태운다(판정을 mock 하지 않는다)."""
     if _NODE is None:
         pytest.skip("node 없음 — 다시 켜기 사이클 skip")
@@ -599,29 +598,26 @@ def test_opencode_principle_recall_core_fires_suppresses_and_resets_on_compactio
         "#### 번들\n- `[shell: git\\s+push]` 다시 켜기 사이클 확인용 규칙 본문.\n",
         encoding="utf-8",
     )
-    script = f"""
+    script = FAKE_CONTEXT_JS + f"""
 const assert = require("node:assert");
 const ctx = require("./ctx-guard-core.cjs");
 const root = {json.dumps(str(tmp_path))};
 const sessionID = "reset-cycle-session";
 
-const client = {{ session: {{ get: async ({{ path }}) => ({{ data: {{ id: path.id }} }}) }} }};
+const make = () => ctx.createCtxGuard({{ location: {{ directory: root }}, session: {{ get: async ({{ sessionID }}) => ({{ id: sessionID }}) }} }});
 
 // 도구 호출 recall 은 ctx core 의 일반 도구 판정 경계 하나가 판정한다(별도 recall before 없음).
 async function fireCount() {{
-  const instance = await ctx.CtxGuardPlugin({{ client, directory: root }});
+  const instance = make();
   const output = {{ system: [] }};
-  await instance["tool.execute.before"](
-    {{ tool: "Bash", sessionID }}, {{ args: {{ command: "git push" }} }},
-  );
-  await instance["experimental.chat.system.transform"]({{ sessionID }}, output);
+  await instance.before(toolEvent("shell", sessionID, {{ command: "git push" }}));
+  await deliverTo(instance, sessionID, output);
   return output.system.filter((text) => text.includes("다시 켜기 사이클 확인용 규칙 본문")).length;
 }}
 
 // 압축 경계 다시 켜기는 ctx 판정(hook-context 의 압축 경계 처리)이 한다.
 async function compact() {{
-  const instance = await ctx.CtxGuardPlugin({{ client, directory: root }});
-  await instance.event({{ event: {{ type: "session.compacted", properties: {{ sessionID }} }} }});
+  await make().event(compactionEnded(sessionID));
 }}
 
 (async () => {{
@@ -631,7 +627,7 @@ async function compact() {{
   assert.strictEqual(second, 0, "같은 세션 재호출이 억제되지 않음: " + second);
   await compact();
   const third = await fireCount();
-  assert.strictEqual(third, 1, "session.compacted 다시 켜기 뒤 재출력 실패: " + third);
+  assert.strictEqual(third, 1, "압축 끝 다시 켜기 뒤 재출력 실패: " + third);
   console.log("RESET_CYCLE_OK");
 }})().catch((error) => {{ console.error(error); process.exit(1); }});
 """
@@ -646,8 +642,8 @@ async function compact() {{
 
 
 def test_opencode_principle_recall_core_surfaces_broken_registry_warning(tmp_path):
-    """opencode 쪽도 파손 경고를 무출력으로 버리지 않는다 — `tool.execute.before` 가 예외 없이
-    끝나면(node 프로세스 rc0 과 같은 구조) system.transform 출력에 경고 문안이 실린다."""
+    """opencode 쪽도 파손 경고를 무출력으로 버리지 않는다 — tool `execute.before` 가 예외 없이
+    끝나면(node 프로세스 rc0 과 같은 구조) session `context` 시스템 문구에 경고 문안이 실린다."""
     if _NODE is None:
         pytest.skip("node 없음 — 파손 경고 출력 skip")
     _write_engine_tools(tmp_path / ".project_manager" / "tools")
@@ -656,20 +652,17 @@ def test_opencode_principle_recall_core_surfaces_broken_registry_warning(tmp_pat
     (wiki_dir / "pm_principles.md").write_text(
         "#### 번들\n- `[shell: (unclosed]` 파손 항목.\n", encoding="utf-8",
     )
-    script = f"""
+    script = FAKE_CONTEXT_JS + f"""
 const assert = require("node:assert");
 const ctx = require("./ctx-guard-core.cjs");
 const root = {json.dumps(str(tmp_path))};
 const sessionID = "broken-registry-session";
 
 (async () => {{
-  const client = {{ session: {{ get: async ({{ path }}) => ({{ data: {{ id: path.id }} }}) }} }};
-  const instance = await ctx.CtxGuardPlugin({{ client, directory: root }});
+  const instance = ctx.createCtxGuard({{ location: {{ directory: root }}, session: {{ get: async ({{ sessionID }}) => ({{ id: sessionID }}) }} }});
   const output = {{ system: [] }};
-  await instance["tool.execute.before"](
-    {{ tool: "Bash", sessionID }}, {{ args: {{ command: "ls -la" }} }},
-  );
-  await instance["experimental.chat.system.transform"]({{ sessionID }}, output);
+  await instance.before(toolEvent("shell", sessionID, {{ command: "ls -la" }}));
+  await deliverTo(instance, sessionID, output);
   assert.strictEqual(output.system.length, 1, "파손 경고가 출력되지 않음: " + JSON.stringify(output));
   assert.ok(output.system[0].includes("[principle-recall]"), output.system[0]);
   assert.ok(output.system[0].includes("파손"), output.system[0]);

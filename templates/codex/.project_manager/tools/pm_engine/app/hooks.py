@@ -356,17 +356,15 @@ _GIT_GRANT_FORGED = "forged"
 # 있을 때만). 슬롯 밖은 판정하지 않는다.
 SLOT_WRITE_DELEGATE_TASK_ENV = "PM_DELEGATE_TASK"
 
-# 파일 쓰기·편집 도구의 대상 경로 입력 키(실측 claude 2.1.272 · opencode 1.18.31).
+# 파일 쓰기·편집 도구의 대상 경로 입력 키(실측 claude 2.1.272 · opencode 2.3.0).
 _WRITE_TOOL_PATH_KEYS: dict[str, str] = {
     "Write": "file_path", "Edit": "file_path", "NotebookEdit": "notebook_path",
-    "write": "filePath", "edit": "filePath",
+    "write": "path", "edit": "path",
 }
 
-# 패치 본문 도구 — 이름은 codex·opencode 공통, 본문 키는 codex `command` · opencode `patchText`(실측
-# codex 0.154.0 · opencode 1.18.31). 대상 경로는 본문의 파일 머리 줄에 있다.
-_PATCH_TOOL_NAME = "apply_patch"
-
-_PATCH_TOOL_TEXT_KEYS: tuple[str, ...] = ("command", "patchText")
+# 패치 본문 도구 이름 → 본문 키: codex `apply_patch` 의 `command`, opencode `patch` 의 `patchText`(실측
+# codex 0.154.0 · opencode 2.3.0). 대상 경로는 본문의 파일 머리 줄에 있다.
+_PATCH_TOOL_TEXT_KEYS: dict[str, str] = {"apply_patch": "command", "patch": "patchText"}
 
 _PATCH_TARGET_LINE = re.compile(
     r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+?)[ \t]*$", re.MULTILINE
@@ -472,11 +470,9 @@ def _write_tool_targets(cwd: str, tool_name: str, tool_input: dict) -> list[Path
     key = _WRITE_TOOL_PATH_KEYS.get(tool_name)
     if key is not None and isinstance(tool_input.get(key), str):
         raw.append(tool_input[key])
-    if tool_name == _PATCH_TOOL_NAME:
-        for text_key in _PATCH_TOOL_TEXT_KEYS:
-            text = tool_input.get(text_key)
-            if isinstance(text, str):
-                raw.extend(match.group(1) for match in _PATCH_TARGET_LINE.finditer(text))
+    text_key = _PATCH_TOOL_TEXT_KEYS.get(tool_name)
+    if text_key is not None and isinstance(tool_input.get(text_key), str):
+        raw.extend(match.group(1) for match in _PATCH_TARGET_LINE.finditer(tool_input[text_key]))
     base = Path(cwd).expanduser()
     return [base / Path(value).expanduser() for value in raw]
 

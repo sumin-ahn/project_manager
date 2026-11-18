@@ -241,11 +241,6 @@ TABLE: dict[str, str | SubsetExpectation] = {
     "developer-hard": ALL,
     "researcher": ALL,
     # 의도된 비대칭 — opencode 전용.
-    "safe-write": subset(
-        {"opencode"},
-        "intent:opencode 1.17~1.18 대용량 write/edit 자동절단 실측 대응 — 다른 하네스는 그 결함이 "
-        "없어 무해",
-    ),
     "pm": subset(
         {"opencode"},
         "intent:orchestrator 가 PM 세션을 spawn 하는 타깃 카드 — 그 spawn 방식이 opencode 에서만 "
@@ -319,16 +314,16 @@ def test_dod_required_rows_are_present_and_classified():
     assert TABLE["git-check"] == ALL
     assert TABLE["developer-hard"] == ALL
     assert TABLE["ctx-guard"] == ALL
-    for row in ("safe-write", "pm", "lite-root-doc", "statusline"):
+    for row in ("pm", "lite-root-doc", "statusline"):
         expectation = TABLE[row]
         assert isinstance(expectation, SubsetExpectation), row
         assert expectation.classification.startswith(("intent:", "defect:")), row
 
 
 def test_known_intentional_asymmetries_do_not_leak_into_other_harnesses():
-    """역방향 확인 — safe-write·pm 카드처럼 의도된 비대칭이 표 밖(다른 하네스)으로 새지 않는다."""
+    """역방향 확인 — pm 카드처럼 의도된 비대칭이 표 밖(다른 하네스)으로 새지 않는다."""
     actual = {h: _harness_actual_features(TEMPLATES, h) for h in HARNESSES}
-    for row in ("safe-write", "pm"):
+    for row in ("pm",):
         expected = TABLE[row].harnesses
         for harness in HARNESSES:
             present = row in actual[harness]
