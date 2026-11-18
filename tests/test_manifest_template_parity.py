@@ -814,3 +814,30 @@ def test_git_check_plugin_rename_retires_old_plugin_files_in_all_manifests():
             assert not (root / old).exists(), (root, old)
     assert (TEMPLATE_ROOTS["opencode"] / ".opencode/plugins/git-check.js").is_file()
     assert (TEMPLATE_ROOTS["opencode"] / ".opencode/lib/git-check-core.cjs").is_file()
+
+
+RETIRED_STALL_WATCHDOG_NEW = ".project_manager/tools/pm_engine/cli/hooks.py"
+RETIRED_STALL_WATCHDOG_OLD = (".opencode/plugins/stall-watchdog.js", ".opencode/lib/stall-watchdog-core.cjs")
+
+
+def test_stall_watchdog_plugin_removal_retires_its_files_in_all_manifests():
+    """지운 OpenCode stall-watchdog 플러그인의 두 파일은 4 manifest 모두 퇴역 지시로만 남는다.
+
+    출하 트리와 제품 루트에는 두 파일이 없고, OpenCode 출하 템플릿(엔진 사본 제외)과 제품 루트
+    `.opencode` 의 어떤 파일도 그 이름을 말하지 않는다.
+    """
+    for manifest in (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST):
+        declared = retired_paths.parse_retired_path_directives(manifest)
+        for old in RETIRED_STALL_WATCHDOG_OLD:
+            assert (old, RETIRED_STALL_WATCHDOG_NEW) in declared, (manifest, old)
+            assert old not in _manifest_path_set(manifest), manifest
+        retired_paths.validated_retired_path_directives(REPO, [manifest])
+    for root in (REPO, *TEMPLATE_ROOTS.values()):
+        for old in RETIRED_STALL_WATCHDOG_OLD:
+            assert not (root / old).exists(), (root, old)
+    shipped = [path for base in ("templates/opencode", ".opencode")
+               for path in repo_owned_paths(REPO, base, mode=OWNED)
+               if ".project_manager" not in path.relative_to(REPO).parts]
+    named = [path.relative_to(REPO).as_posix() for path in shipped
+             if b"stall-watchdog" in path.read_bytes()]
+    assert shipped and named == [], named

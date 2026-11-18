@@ -38,8 +38,8 @@ GRANT_MARK = "git " + "\uD5C8\uC6A9" + ":"
 RULES = "#### 번들\n- `[shell: git\\s+status]` 상태 확인 규칙 본문.\n"
 # 판정 경계가 세 하네스 공통으로 원문 전달해야 하는 셸 문자열(선필터가 놓치던 형태 포함).
 UNFILTERED = ["echo ok", "g\\it status", "g\\it restore -- x", "G=git; $G restore -- x", "x=1; echo ok"]
-# 등록 plugin 6개의 lib 모듈.
-PLUGIN_CORES = ("safe-write-core.cjs", "stall-watchdog-core.cjs")
+# 등록 plugin 5개의 lib 모듈.
+PLUGIN_CORES = ("safe-write-core.cjs",)
 
 # node 스크립트 머리 — 모든 Python 실행(spawnSync)을 기록한 뒤 실제로 실행한다. core 를 require 하기
 # 전에 바꿔야 plugin 이 만든 판정 경계도 이 함수를 쓴다.
@@ -200,7 +200,7 @@ console.log(JSON.stringify({failures, level: real.context.level, launches: launc
 
 
 def test_registered_before_starts_python_once(tmp_path):
-    """등록 6 plugin 의 before 전체를 도구 5종에 실행하면 관측 전후 모두 Python 은 정확히 한 번이다."""
+    """등록 5 plugin 의 before 전체를 도구 5종에 실행하면 관측 전후 모두 Python 은 정확히 한 번이다."""
     root = _project(tmp_path)
     (root / "README.md").write_text("a\n", encoding="utf-8")
     script = r"""
@@ -212,7 +212,6 @@ const git = require("./git-check-core.cjs");
 const principle = require("./principle-recall-core.cjs");
 const delegate = require("./delegate-channel-core.cjs");
 const safe = require("./safe-write-core.cjs");
-const stall = require("./stall-watchdog-core.cjs");
 const schema = new Proxy(function () {}, {get: () => schema, apply: () => schema});
 const tool = Object.assign((definition) => definition, {schema});
 (async () => {
@@ -220,7 +219,7 @@ const tool = Object.assign((definition) => definition, {schema});
   const input = {client, directory: root, worktree: root};
   const plugins = [await ctx.CtxGuardPlugin(input), await git.GitCheckPlugin(input),
     await principle.PrincipleRecallPlugin(input), await delegate.DelegateChannelPlugin(input),
-    await safe.makeSafeWritePlugin(tool)(input), await stall.makeStallWatchdogPlugin(client)(input)];
+    await safe.makeSafeWritePlugin(tool)(input)];
   const befores = plugins.map((plugin) => plugin["tool.execute.before"]).filter(Boolean);
   const calls = {
     read: {filePath: path.join(root, "README.md")},

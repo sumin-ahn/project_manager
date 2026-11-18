@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Removed
+
+- OpenCode 어댑터의 stall-watchdog 플러그인(`.opencode/plugins/stall-watchdog.js`·`.opencode/lib/stall-watchdog-core.cjs`)을 지웠다. 세션이 쉬는 상태(`session.idle`)가 될 때 할 일을 남긴 채 턴을 끝낸 것 같다고 판단하면 `[stall-watchdog]` 로 시작하는 안내 문구를 세션에 넣던 플러그인으로, 제대로 동작하지 않고 불편만 줘서 지웠다. 이미 설치한 곳은 갱신(`pm_update.py`, 관리자 앱 [적용])이 두 파일을 `.pm_import_backups/<날짜>/` 아래로 옮긴다. 손으로 고친 사본도 옮기며 원래 내용은 그 백업에 남는다. 실행 중인 OpenCode 는 다시 띄워야 플러그인이 빠진다. 이 플러그인만 읽던 환경 변수 `PM_STALL_WATCHDOG_MAX_CONSEC`·`PM_STALL_WATCHDOG_MAX_TOTAL`·`PM_STALL_WATCHDOG_DISABLED` 는 더 쓰이지 않고, 플러그인이 상태를 적던 `.project_manager/.local/stall-watchdog/` 폴더는 지워도 된다. 위임 실행이 첫 출력 없이 멈추면 끊고 다시 띄우는 엔진의 감시(`PM_OC_FIRST_EVENT_TIMEOUT`·`PM_OC_STALL_RETRIES`)는 그대로다.
+
 ### Fixed
 
 - `pm_bootstrap.py --task <task>` 가 하네스 세션 기록이 없어 멈출 때 안내가 "훅 설치를 확인하라" 만 말해, 훅이 제대로 돌고 있어도 설치를 의심하게 하던 것을 고쳤다. 가드 훅은 명령에 셸 확장(`$`·백틱)이 보이면 부트스트랩과 상관없는 자리여도(예: 뒤에 붙인 `; echo rc=$?`) 세션 기록을 남기지 않는다. 이제 안내는 이 경우를 먼저 알리고, 셸 확장 없이 부트스트랩 호출만 따로 다시 실행하라고 한 뒤, 그래도 같으면 가드 훅 설치와 하네스가 그 훅을 실행하는지 확인하라고 한다. 안내는 세 줄이고 기록 경로는 마지막 줄 끝 `(기록 경로: …)` 에 나온다. 첫 줄 앞부분 `task '<task>' 의 하네스 세션 기록이 없다` 와 종료 코드 1 은 그대로다.
