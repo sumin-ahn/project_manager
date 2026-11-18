@@ -96,8 +96,9 @@ def normalize_agent_name(
 ) -> tuple[str, str] | None:
     """Normalize a harness agent literal to ``(role, tier)``.
 
-    An explicit tier is accepted for adapters whose tool surface carries it in
-    a separate field.  Conflicts with an encoded tier fail open at the caller.
+    ``None`` means the name is not a framework role (not a decision target).  An
+    explicit tier is accepted for adapters whose tool surface carries it in a
+    separate field; a tier that is not a framework tier of that role raises.
     """
     if not isinstance(agent_name, str) or not isinstance(self_harness, str):
         return None
@@ -110,16 +111,14 @@ def normalize_agent_name(
 
     if tier is None:
         return normalized
-    if not isinstance(tier, str):
-        return None
-    explicit_tier = tier.strip().lower()
-    if explicit_tier not in DELEGATE_TIERS:
-        return None
     encoded_role, encoded_tier = normalized
-    if encoded_tier != "normal" and explicit_tier != encoded_tier:
-        return None
-    if explicit_tier == "hard" and encoded_role != "developer":
-        return None
+    explicit_tier = tier.strip().lower() if isinstance(tier, str) else ""
+    if (
+        explicit_tier not in DELEGATE_TIERS
+        or (encoded_tier != "normal" and explicit_tier != encoded_tier)
+        or (explicit_tier == "hard" and encoded_role != "developer")
+    ):
+        raise ValueError(f"에이전트 {name!r} 의 티어가 아니다: {tier!r}")
     return encoded_role, explicit_tier
 
 
@@ -137,25 +136,17 @@ def _mapping_is_unset(
 
 
 # The master switch shares the ``delegate.`` prefix with the role mapping but is
-# not a mapping key — counting it as one would make a switch-only conf look
-# "configured" and turn Row 5's quiet allow into a resolution warning.
+# not a mapping key.
 _DELEGATE_SWITCH_KEY = "delegate.enabled"
-
-
-def _delegate_mapping_config_is_absent(conf: Mapping[str, object]) -> bool:
-    """Whether this clone has no primary/fallback delegation mapping at all."""
-    return not any(
-        str(key).startswith("delegate.") and str(key) != _DELEGATE_SWITCH_KEY
-        for key in conf
-    )
 
 
 def _frontmatter_model_scalar(value: str) -> str:
     """Parse one model scalar with the project's PyYAML frontmatter grammar."""
-    # Hook interpreters may lack the optional runtime dependency even though
-    # project management commands normally install it.  Keep module/CLI/hook
-    # startup alive; the caller converts this local import failure to the same
-    # allow+loud warning as any other native-card inspection failure.
+    # Hook interpreters may lack the runtime dependency even though project
+    # management commands normally install it.  Only the Claude card inspection
+    # needs it, so module/CLI/hook startup stays alive; the import failure
+    # propagates like any card that cannot be read and the adapter boundary
+    # blocks that delegation call.
     import yaml
 
     parsed = yaml.safe_load(f"model: {value}\n")
@@ -174,7 +165,7 @@ def _frontmatter_model_scalar(value: str) -> str:
 
 # 렌더 토큰 형태. 카드 소스(프레임워크 루트·templates)는 `model: "{{DELEGATE_MODEL_<ROLE>}}"` 이고
 # 채택자 트리는 pm_import/pm_update 가 이를 conf 해소값으로 렌더한다. 미해소면 `# model: "<model>"
-# # TODO: …` 로 중화되어 `model` 키 자체가 사라진다(그때는 "frontmatter model 없음" 경로).
+# # TODO: …` 로 중화되어 `model` 키 자체가 사라진다(그때 카드 판독은 model 없음을 돌려주고 판정은 미렌더 경고다).
 _UNRENDERED_MODEL_TOKEN_RE = re.compile(r"^\{\{[A-Z][A-Z0-9_]*\}\}$")
 
 

@@ -625,11 +625,9 @@ def test_codex_hard_profile_missing_allows_without_normal_fallback_or_warning(gu
     )
 
     assert codex_envelope._codex_decision_envelope(decision) == {}
-    assert "hard 프로필 미설정" in decision["reason"]
-    assert "normal 로 수준 낮춤 금지" in decision["reason"]
-    assert "delegate-channel/record" in decision["reason"]
-    assert "delegate-channel/warn" not in decision["reason"]
-    assert "--tier hard" not in decision["reason"]
+    assert decision["reason"] == (
+        "[delegate-channel/allow] 역할 매핑 미설정(delegate.developer.hard.harness/.model)"
+    )
 
 
 def test_codex_hook_input_without_an_absolute_cwd_is_not_a_verdict_input(
@@ -870,24 +868,37 @@ def test_matching_events_survive_rotation_without_false_positive(
     assert not list(tmp_path.glob("*.matched.*.json"))
 
 
-def test_incomplete_config_warning_uses_quiet_jsonl_record_channel(guard_home, guard, tmp_path):
+def test_incomplete_config_is_denied_with_the_engine_reason(guard_home, guard, tmp_path):
+    """역할 매핑이 일부만 있는 설정의 spawn 은 엔진 오류 문구로 거부된다(전에는 Codex 에 보이지 않는 통과).
+
+    `codex-hook` CLI 가 내는 바이트가 측정된 거부 5필드이고 관측 기록은 decision_deny 다."""
     conf = {
         "delegate.enabled": "true",
         "delegate.developer.harness": "opencode",
-        # An incomplete atomic profile is a core [warn] allow.
     }
-    decision = delegate_channel._evaluate_codex_decision(
-        guard_home, _payload("developer"), config_loader=lambda _home: conf
+    reason = (
+        "[delegate-channel/deny] 위임 설정 오류: 역할 매핑 미설정(delegate.developer.harness/.model) — "
+        "말없는 대체 동작 금지. local.conf 에 delegate.<role>.harness/.model 을 설정하라."
     )
-    result = codex_envelope._codex_decision_envelope(decision)
-    recorded = codex_hook.observe_codex_pretooluse(
-        guard_home, _payload("developer"), result, decision=decision, state_dir=tmp_path
-    )
-
-    assert recorded == {}
+    stdout = io.StringIO()
+    assert cli_delegate_channel_guard.main(
+        pm_paths.home_at(guard.REPO), ["codex-hook"],
+        stdin=io.StringIO(json.dumps(_payload("developer"))), stdout=stdout,
+        config_loader=lambda _home: conf, state_dir=tmp_path,
+    ) == 0
+    assert json.loads(stdout.getvalue()) == {
+        "decision": "block",
+        "reason": reason,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+        "systemMessage": reason,
+        "suppressOutput": False,
+    }
     audit = codex_observation._codex_audit_path(guard_home, tmp_path).read_text(encoding="utf-8")
-    assert "delegate-channel/warn" in audit
-    assert '"status":"decision_allow"' in audit
+    assert '"status":"decision_deny"' in audit
 
 
 def _pretooluse_handler() -> dict[str, object]:

@@ -351,7 +351,7 @@ for (const result of [
 
 def test_opencode_non_delegation_agent_record_does_not_toast_or_inject_context(tmp_path):
     """Unknown built-ins such as general are recorded by Python without alert fatigue."""
-    judgment = delegate_channel.decide(pm_paths.home_at(tmp_path), "general", "normal", {}, "opencode")
+    judgment = delegate_channel._decide_agent_input(pm_paths.home_at(tmp_path), "general", "opencode")
     assert judgment["verdict"] == "allow"
     assert "delegate-channel/record" in judgment["reason"]
     assert "delegate-channel/warn" not in judgment["reason"]
@@ -741,3 +741,38 @@ const judge = (_root, cwd, agent, tier) => m.judgeDelegation(root, cwd, agent, t
     )
     assert result.returncode == 0, result.stderr or result.stdout
     assert "DELEGATE_RERUN_VERDICT_OK" in result.stdout
+
+
+def test_opencode_partial_mapping_task_call_is_denied_by_the_real_engine(tmp_path):
+    """역할 매핑이 일부만 있는 설정에서 task 호출은 실제 엔진 판정으로 거부된다(전에는 경고 후 통과).
+
+    거부 사유는 엔진 오류 문구 그대로이고 경고 채널(toast·시스템 문맥)에는 아무것도 싣지 않는다."""
+    engine_root = tmp_path / "adopter"
+    shutil.copytree(REPO / ".project_manager" / "tools", engine_root / ".project_manager" / "tools")
+    (engine_root / ".project_manager" / "local.conf").write_text(
+        f"runtime.py={sys.executable}\ndelegate.developer.harness=opencode\n", encoding="utf-8")
+    script = r'''
+const assert = require("node:assert");
+const m = require("./delegate-channel-core.cjs");
+const root = process.argv[1];
+const judge = (_root, cwd, agent, tier) => m.judgeDelegation(root, cwd, agent, tier);
+(async () => {
+  const toasts = [];
+  const hooks = await m.makeDelegateChannelPlugin(judge)({directory: root, client: {tui: {showToast: async (v) => toasts.push(v)}}});
+  await assert.rejects(
+    hooks["tool.execute.before"]({tool: "task", sessionID: "S"}, {args: {subagent_type: "developer"}}),
+    (error) => error.message === "[delegate-channel/deny] 위임 설정 오류: 역할 매핑 미설정(delegate.developer.harness/.model) — 말없는 대체 동작 금지. local.conf 에 delegate.<role>.harness/.model 을 설정하라.",
+  );
+  const context = {system: []};
+  await hooks["experimental.chat.system.transform"]({sessionID: "S"}, context);
+  assert.deepStrictEqual(toasts, []);
+  assert.deepStrictEqual(context.system, []);
+  console.log("PARTIAL_MAPPING_DENIED_OK");
+})().catch((error) => { console.error(error); process.exit(1); });
+'''
+    result = subprocess.run(
+        [_node(), "-e", script, str(engine_root)], cwd=OPEN_LIB, check=False,
+        capture_output=True, text=True, encoding="utf-8", timeout=120,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert "PARTIAL_MAPPING_DENIED_OK" in result.stdout

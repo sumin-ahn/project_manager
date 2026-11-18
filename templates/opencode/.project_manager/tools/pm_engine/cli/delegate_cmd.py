@@ -410,12 +410,10 @@ def build_subcommand_parser(command: str) -> argparse.ArgumentParser | None:
     return parser
 
 
-# cross 채널 판정이 "결정 못함"으로 바꾸는 allow reason — 이 둘만 침묵 통과다(그 밖 verdict!=deny 는
-# 판정불능이라 stderr 경고 1줄을 낸다. 불변식 4). native harness 일치·역할 harness 미설정은 decide()가
-# 이미 확정적으로 답한 상태라 노이즈를 더하지 않는다.
+# cross 채널 판정이 침묵 통과시키는 allow reason — native harness 일치만이다(그 밖 cross 거부가 아닌
+# 판정은 stderr 경고 1줄을 낸다. 불변식 4). decide()가 이미 확정적으로 답한 상태라 노이즈를 더하지 않는다.
 _PREPARE_CROSS_ROLE_SILENT_ALLOW_PREFIXES = (
     "[delegate-channel/allow] conf 와 native harness 일치",
-    "[delegate-channel/allow] 역할 harness 미설정",
 )
 
 # 이 통과 조건이 거부로 바꾸는 유일한 deny 는 매핑된 하네스가 PM 하네스와 달라 cross 인 경우
@@ -437,7 +435,15 @@ def _reject_cross_role_prepare(home, role: str, tier: str, conf: dict[str, str])
     그 구별은 사용자용 사유 문자열이 아니라 구조 필드(harness/model 이 비어 있지 않음)로 한다(불변식 1).
     판정 실패는 전파한다.
     """
-    pm_harness = delegate_execute._session_harness(os.environ) or ""
+    pm_harness = delegate_execute._session_harness(os.environ)
+    if pm_harness is None:
+        # 하네스 세션 환경 변수가 없거나(하네스 밖 터미널) 둘 이상이면(중첩 세션) cross 여부를 판정할 수 없다.
+        print(
+            "[pm-delegate/warn] PM 하네스를 알 수 없음(하네스 세션 환경 변수가 없거나 둘 이상) — "
+            "cross 역할 거부 판정 없이 prepare 통과(fail-open)",
+            file=sys.stderr,
+        )
+        return
     result = delegate_channel.decide(home, role, tier, conf, pm_harness)
     reason = result.get("reason", "")
     is_cross_harness_deny = (

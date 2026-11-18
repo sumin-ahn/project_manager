@@ -154,8 +154,8 @@ def test_claude_hook_is_core_specialization_equivalent(guard_home, guard, role, 
         ("code-reviewer", "opencode", None, ("code-reviewer", "normal")),
         ("developer-hard", "codex", None, ("developer", "hard")),
         ("developer", "opencode", "hard", ("developer", "hard")),
-        ("researcher", "opencode", "hard", None),
         ("unknown-agent", "opencode", None, None),
+        ("unknown-agent", "opencode", "hard", None),
     ),
 )
 def test_agent_name_role_tier_normalization(
@@ -190,11 +190,9 @@ def test_tier_mapping_matches_engine_base_or_hard_without_inheritance(guard_home
     missing = delegate_channel.decide(guard_home, "developer", "hard", conf, "opencode")
     assert missing["verdict"] == "allow"
     assert (missing["harness"], missing["model"]) == ("", "")
-    assert "hard 프로필 미설정" in missing["reason"]
-    assert "normal 로 수준 낮춤 금지" in missing["reason"]
-    assert "--tier hard" not in missing["reason"]
-    assert "delegate-channel/record" in missing["reason"]
-    assert "delegate-channel/warn" not in missing["reason"]
+    assert missing["reason"] == (
+        "[delegate-channel/allow] 역할 매핑 미설정(delegate.developer.hard.harness/.model)"
+    )
 
 
 @pytest.mark.parametrize("tier", ("normal", "hard"))
@@ -262,18 +260,45 @@ def test_mapping_resolution_calls_pm_delegate_single_truth(guard, monkeypatch):
     assert calls == [(conf, "developer", "normal", None, None, None)]
 
 
-def test_unknown_self_warns_but_unknown_agent_is_quietly_recorded(guard_home, guard):
-    cross = {
+def test_decide_raises_for_inputs_that_are_not_decision_inputs(guard_home, guard):
+    """판정 입력이 아닌 값(알 수 없는 하네스, 프레임워크 역할·티어가 아님)은 통과 판정을 만들지 않고 올린다.
+
+    진입 함수가 먼저 정규화하므로 정상 경로에서는 닿지 않는다. 닿으면 어댑터 고장이라 경계가 그 호출을
+    막는다. 프레임워크 역할이 아닌 에이전트는 진입 함수가 판정 대상 아님으로 기록하고 판정 함수를
+    부르지 않는다."""
+    conf = {
         "delegate.enabled": "true",
         "delegate.developer.harness": "claude",
+        "delegate.developer.model": "opus",
     }
-    unknown_self = delegate_channel.decide(guard_home, "developer", "normal", cross, "")
-    unknown_role = delegate_channel.decide(guard_home, "not-an-agent", "normal", cross, "opencode")
-    assert unknown_self["verdict"] == unknown_role["verdict"] == "allow"
-    assert "self_harness" in unknown_self["reason"] and "warn" in unknown_self["reason"]
-    assert "정규화 실패" in unknown_role["reason"]
-    assert "delegate-channel/record" in unknown_role["reason"]
-    assert "delegate-channel/warn" not in unknown_role["reason"]
+    for role, tier, harness in (
+        ("developer", "normal", ""),
+        ("developer", "normal", "gemini"),
+        ("developer", "normal", None),
+        ("not-an-agent", "normal", "opencode"),
+        ("developer", "legendary", "opencode"),
+        ("researcher", "hard", "opencode"),
+    ):
+        with pytest.raises(ValueError, match="위임 채널 판정 입력"):
+            delegate_channel.decide(guard_home, role, tier, conf, harness)
+
+    def unexpected_loader(_home):
+        raise AssertionError("non-framework agent must not read local.conf")
+
+    record = delegate_channel._decide_agent_input(
+        guard_home, "general", "opencode", config_loader=unexpected_loader)
+    assert record == {
+        "verdict": "allow",
+        "reason": "[delegate-channel/record] 프레임워크 역할이 아닌 에이전트(opencode/general) — 판정 대상 아님",
+        "harness": "",
+        "model": "",
+    }
+    with pytest.raises(ValueError, match="하네스를 알 수 없다"):
+        delegate_channel._decide_agent_input(
+            guard_home, "developer", "gemini", config_loader=unexpected_loader)
+    with pytest.raises(ValueError, match="티어가 아니다"):
+        delegate_channel._decide_agent_input(
+            guard_home, "researcher", "opencode", tier="hard", config_loader=unexpected_loader)
 
 
 @pytest.mark.parametrize(
@@ -290,8 +315,10 @@ def test_non_agent_or_non_delegate_role_passes_without_loading_conf(guard_home, 
     assert delegate_channel.evaluate_hook(guard_home, payload, config_loader=unexpected_loader) is None
 
 
-def test_missing_pyyaml_keeps_module_cli_and_hook_nonblocking(tmp_path):
-    """MF4: a hook interpreter without PyYAML degrades only model inspection."""
+def test_missing_pyyaml_fails_only_the_claude_card_check(tmp_path):
+    """PyYAML 이 없는 훅 실행기에서도 모듈·CLI 는 뜨고 카드를 읽지 않는 판정은 그대로 나온다.
+
+    Claude 카드 판독만 PyYAML 을 쓰므로 그 판정은 예외로 올라가 경계가 막는다(경고 후 통과하지 않는다)."""
     (tmp_path / "yaml.py").write_text(
         'raise ModuleNotFoundError("simulated missing PyYAML")\n', encoding="utf-8"
     )
@@ -310,24 +337,30 @@ conf = {
     "delegate.developer.harness": "claude",
     "delegate.developer.model": "opus",
 }
+home = guard.pm_paths.home_at(guard.REPO)
 stdout = io.StringIO()
 rc = guard.delegate_channel_guard.main(
-    guard.pm_paths.home_at(guard.REPO),
-    ["decide", "--role", "developer", "--harness", "claude"],
-    stdout=stdout,
-    config_loader=lambda home: conf,
+    home, ["decide", "--role", "developer", "--harness", "opencode"],
+    stdout=stdout, config_loader=lambda home: conf,
 )
 decision = json.loads(stdout.getvalue())
-hook = guard.delegate_channel_guard.delegate_channel.evaluate_hook(
-    guard.pm_paths.home_at(guard.Path(guard_path).resolve().parents[2]),
-    {
-        "hook_event_name": "PreToolUse",
-        "tool_name": "Agent",
-        "tool_input": {"subagent_type": "developer"},
-    },
+general = guard.delegate_channel_guard.delegate_channel.evaluate_hook(
+    home,
+    {"hook_event_name": "PreToolUse", "tool_name": "Agent",
+     "tool_input": {"subagent_type": "general-purpose"}},
     config_loader=lambda home: conf,
 )
-print(json.dumps({"rc": rc, "decision": decision, "hook": hook}))
+try:
+    guard.delegate_channel_guard.delegate_channel.evaluate_hook(
+        home,
+        {"hook_event_name": "PreToolUse", "tool_name": "Agent",
+         "tool_input": {"subagent_type": "developer"}},
+        config_loader=lambda home: conf,
+    )
+    raised = ""
+except ModuleNotFoundError as exc:
+    raised = str(exc)
+print(json.dumps({"rc": rc, "decision": decision, "general": general, "raised": raised}))
 '''
     proc = subprocess.run(
         [sys.executable, "-c", script, str(GUARD_PY), str(tmp_path)],
@@ -340,12 +373,10 @@ print(json.dumps({"rc": rc, "decision": decision, "hook": hook}))
     assert proc.returncode == 0, proc.stderr
     result = json.loads(proc.stdout)
     assert result["rc"] == 0
-    assert set(result["decision"]) == {"verdict", "reason", "harness", "model"}
-    assert result["decision"]["verdict"] == "allow"
-    assert "simulated missing PyYAML" in result["decision"]["reason"]
-    output = result["hook"]["hookSpecificOutput"]
-    assert set(output) == {"hookEventName", "additionalContext"}
-    assert "permissionDecision" not in output
+    assert result["decision"]["verdict"] == "deny"
+    assert result["decision"]["reason"].startswith("[delegate-channel/deny] conf 는 claude/opus")
+    assert result["general"] is None
+    assert result["raised"] == "simulated missing PyYAML"
 
 
 def test_deny_json_schema_and_remediation(guard):
@@ -719,41 +750,36 @@ def test_claude_four_native_model_mismatches_are_nonblocking_hook_warnings(
     assert output["additionalContext"] == result["reason"]
 
 
-@pytest.mark.parametrize(
-    ("state", "body", "evidence"),
-    (
-        ("missing", None, "FileNotFoundError"),
-        ("invalid-utf8", b"\xff\xfe", "UnicodeDecodeError"),
-        ("no-start", b"model: opus\n---\n", "시작 fence 없음"),
-        ("unterminated", b"---\nmodel: opus\n", "종료 fence 없음"),
-        ("model-missing", b"---\nname: developer\n---\n", "model 없음"),
-        ("model-empty", b"---\nmodel:\n---\n", "비어 있음"),
-        ("model-duplicate", b"---\nmodel: opus\nmodel: sonnet\n---\n", "model 중복"),
-        ("model-sequence", b"---\nmodel: [opus]\n---\n", "scalar"),
-    ),
-)
-@pytest.mark.parametrize("enabled", (True,))
-def test_claude_agent_card_failures_allow_with_additional_context(
-    guard_home, guard, monkeypatch, tmp_path, state, body, evidence, enabled
-):
-    guard_home = pm_paths.home_at(tmp_path)
-    relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
-    if body is not None:
-        _write_agent_card(tmp_path, relative, body)
+def test_claude_agent_card_read_failures_raise_out_of_the_decision(guard, tmp_path):
+    """카드를 읽지 못하면(파일 없음·UTF-8 아님·형식 오류) 판정 함수와 Claude 진입 함수가 예외로 올린다.
+
+    경고를 단 통과 판정을 만들지 않는다 — 막는 문구는 Claude 드라이버 경계가 낸다."""
     conf = {
-        "delegate.enabled": str(enabled).lower(),
+        "delegate.enabled": "true",
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-
-    result = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
-    assert result["verdict"] == "allow"
-    assert "[delegate-channel/warn]" in result["reason"]
-    assert evidence in result["reason"]
-    hook = delegate_channel.evaluate_hook(guard_home, _payload("developer"), config_loader=lambda _home: conf)
-    assert set(hook["hookSpecificOutput"]) == {
-        "hookEventName", "additionalContext",
-    }
+    relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
+    cases = (
+        ("missing", None, FileNotFoundError, ""),  # 메시지는 운영체제 언어를 따른다
+        ("invalid-utf8", b"\xff\xfe", UnicodeDecodeError, "utf-8"),
+        ("no-start", b"model: opus\n---\n", ValueError, "시작 fence 없음"),
+        ("unterminated", b"---\nmodel: opus\n", ValueError, "종료 fence 없음"),
+        ("model-empty", b"---\nmodel:\n---\n", ValueError, "비어 있음"),
+        ("model-duplicate", b"---\nmodel: opus\nmodel: sonnet\n---\n", ValueError, "model 중복"),
+        ("model-sequence", b"---\nmodel: [opus]\n---\n", ValueError, "scalar"),
+    )
+    for state, body, error, evidence in cases:
+        root = tmp_path / state
+        root.mkdir()
+        if body is not None:
+            _write_agent_card(root, relative, body)
+        home = pm_paths.home_at(root)
+        with pytest.raises(error) as decided:
+            delegate_channel.decide(home, "developer", "normal", conf, "claude")
+        assert evidence in str(decided.value), state
+        with pytest.raises(error):
+            delegate_channel.evaluate_hook(home, _payload("developer"), config_loader=lambda _home: conf)
 
 
 def test_claude_agent_card_quoted_scalar_is_normalized(guard_home, guard, monkeypatch, tmp_path):
@@ -833,11 +859,10 @@ def test_claude_agent_card_unsafe_leaf_is_rejected_before_content_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
-    assert result["verdict"] == "allow"
-    assert result["reason"].startswith("[delegate-channel/warn]")
-    assert "symlink/reparse/hardlink/비-regular 거부" in result["reason"]
-    assert "external-secret" not in result["reason"]
+    with pytest.raises(ValueError) as rejected:
+        delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
+    assert "symlink/reparse/hardlink/비-regular 거부" in str(rejected.value)
+    assert "external-secret" not in str(rejected.value)
 
 
 def test_claude_agent_card_parent_symlink_is_rejected_without_external_read(
@@ -855,10 +880,10 @@ def test_claude_agent_card_parent_symlink_is_rejected_without_external_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
-    assert "[delegate-channel/warn]" in reason
-    assert "symlink/reparse/비-directory 거부" in reason
-    assert "parent-link-secret" not in reason
+    with pytest.raises(ValueError) as rejected:
+        delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
+    assert "symlink/reparse/비-directory 거부" in str(rejected.value)
+    assert "parent-link-secret" not in str(rejected.value)
 
 
 def test_claude_agent_card_mapping_cannot_escape_repo(
@@ -878,10 +903,10 @@ def test_claude_agent_card_mapping_cannot_escape_repo(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
-    assert "[delegate-channel/warn]" in reason
-    assert "상대경로 거부" in reason
-    assert "containment-secret" not in reason
+    with pytest.raises(ValueError) as rejected:
+        delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
+    assert "상대경로 거부" in str(rejected.value)
+    assert "containment-secret" not in str(rejected.value)
 
 
 @pytest.mark.parametrize("interpreter", ("native", "no_dir_fd", "windows_like"))
@@ -926,10 +951,11 @@ def test_claude_agent_card_inode_swap_is_rejected_before_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
+    with pytest.raises(ValueError) as rejected:
+        delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
     assert swapped
-    assert "inode 교체" in reason
-    assert "race-secret" not in reason
+    assert "inode 교체" in str(rejected.value)
+    assert "race-secret" not in str(rejected.value)
 
 
 def test_file_identity_rejects_volumes_without_a_file_index(guard, tmp_path):
@@ -954,7 +980,7 @@ def test_file_identity_rejects_volumes_without_a_file_index(guard, tmp_path):
 def test_zero_file_index_card_read_fails_loud_instead_of_matching(
     guard_home, guard, monkeypatch, tmp_path
 ):
-    """정체성 미제공 볼륨의 card 는 조용한 일치가 아니라 loud 경고로 나간다 (fail-open 유지)."""
+    """정체성 미제공 볼륨의 card 는 조용한 일치가 아니라 판정 실패로 올라간다."""
     monkeypatch.setattr(guard.os, "supports_dir_fd", set())
     guard_home = pm_paths.home_at(tmp_path)
     relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
@@ -977,13 +1003,9 @@ def test_zero_file_index_card_read_fails_loud_instead_of_matching(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
-
-    assert result["verdict"] == "allow"
-    assert "[delegate-channel/warn]" in result["reason"]
-    assert "판정 불능" in result["reason"]
-    assert "TypeError" not in result["reason"]   # 코드 결함이 같은 문구로 덮이지 않는다
-    assert "native 통과(fail-open)" in result["reason"]
+    with pytest.raises(ValueError) as rejected:   # 코드 결함(TypeError)이 같은 자리로 덮이지 않는다
+        delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
+    assert "판정 불능" in str(rejected.value)
 
 
 @pytest.mark.parametrize("role", ROLES)
@@ -1006,7 +1028,7 @@ def test_portable_reader_normal_tracked_cards_are_quiet_match(
 def test_unrendered_source_card_is_diagnosed_as_unrendered_not_mismatch(guard_home, guard, role):
     """T-0731 — 소스 트리(프레임워크 루트·templates)나 렌더가 실패한 채택자 트리에서 카드 model 이
     `{{DELEGATE_MODEL_*}}` 토큰이면 "불일치(conf 를 고쳐라)" 가 아니라 "미렌더(pm-update 로 다시
-    렌더하라)" 로 진단해야 해결 방법이 맞다. 판정은 여전히 fail-open allow.
+    렌더하라)" 로 진단해야 해결 방법이 맞다. 판정은 통과(경고)다.
     """
     conf = {
         f"delegate.{role}.harness": "claude",
@@ -1058,9 +1080,9 @@ def test_secure_reader_does_not_retry_security_failure_via_portable_path(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
+    with pytest.raises(NotImplementedError, match="simulated strong-path failure"):
+        delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
     assert calls == ["strong"]
-    assert "simulated strong-path failure" in reason
 
 
 def test_windows_reparse_metadata_is_linklike(guard):
@@ -1134,13 +1156,9 @@ def test_zero_file_index_windows_shaped_card_reports_the_identity_reason(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
-
-    assert result["verdict"] == "allow"
-    assert "[delegate-channel/warn]" in result["reason"]
-    assert "파일 정체성(st_ino) 미제공 볼륨" in result["reason"]
-    assert "TypeError" not in result["reason"]
-    assert "native 통과(fail-open)" in result["reason"]
+    with pytest.raises(ValueError) as rejected:   # 속성 값 없음이 TypeError 로 새지 않는다
+        delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
+    assert "파일 정체성(st_ino) 미제공 볼륨" in str(rejected.value)
 
 
 def test_portable_reader_symlink_rejects_before_any_content_read(
@@ -1165,10 +1183,10 @@ def test_portable_reader_symlink_rejects_before_any_content_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
+    with pytest.raises(ValueError) as rejected:
+        delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
     assert reads == []
-    assert "[delegate-channel/warn]" in reason
-    assert "windows-symlink-secret" not in reason
+    assert "windows-symlink-secret" not in str(rejected.value)
 
 
 def test_portable_reader_inode_swap_rejects_before_any_content_read(
@@ -1204,10 +1222,11 @@ def test_portable_reader_inode_swap_rejects_before_any_content_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    reason = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")["reason"]
+    with pytest.raises(ValueError) as rejected:
+        delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
     assert swapped and reads == []
-    assert "inode 교체" in reason
-    assert "windows-race-secret" not in reason
+    assert "inode 교체" in str(rejected.value)
+    assert "windows-race-secret" not in str(rejected.value)
 
 
 def test_portable_reader_root_swap_during_resolve_rejects_before_read(
@@ -1246,12 +1265,11 @@ def test_portable_reader_root_swap_during_resolve_rejects_before_read(
         "delegate.developer.harness": "claude",
         "delegate.developer.model": "opus",
     }
-    result = delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
+    with pytest.raises(ValueError) as rejected:
+        delegate_channel.decide(guard_home, "developer", "normal", conf, "claude")
     assert swapped and reads == []
-    assert result["verdict"] == "allow"
-    assert result["reason"].startswith("[delegate-channel/warn]")
-    assert "engine root 교체 거부" in result["reason"]
-    assert "ROOT_SWAP_SENTINEL" not in result["reason"]
+    assert "engine root 교체 거부" in str(rejected.value)
+    assert "ROOT_SWAP_SENTINEL" not in str(rejected.value)
 
 
 def test_claude_agent_card_reader_exception_propagates_out_of_the_cli(
@@ -1337,18 +1355,37 @@ def test_codex_hard_and_opencode_native_do_not_read_claude_cards(
     assert delegate_channel.decide(guard_home, "researcher", "normal", opencode, "opencode")["verdict"] == "allow"
 
 
-@pytest.mark.parametrize("enabled", (True,))
-def test_unset_is_quiet_but_partial_tuple_is_loud_fail_open(guard_home, guard, enabled):
-    unset = {"delegate.enabled": str(enabled).lower()}
-    partial = {
-        "delegate.enabled": str(enabled).lower(),
-        "delegate.developer.harness": "claude",
-    }
+def test_partial_or_invalid_role_mapping_is_denied_with_the_engine_reason(guard_home, guard):
+    """역할 매핑이 일부만 있거나(하네스·모델 중 하나) 하네스 이름이 틀리면 그 역할 위임을 거부한다.
+
+    거부 사유는 같은 설정에서 `pm_delegate` 가 내는 엔진 오류 문구 그대로다. 그 역할(티어)의 매핑이
+    아예 없으면(다른 역할만 설정) 지금처럼 조용히 통과한다."""
+    unset = {"delegate.enabled": "true", "delegate.architect.harness": "claude",
+             "delegate.architect.model": "opus"}
     quiet = delegate_channel.decide(guard_home, "developer", "normal", unset, "claude")
-    warning = delegate_channel.decide(guard_home, "developer", "normal", partial, "claude")
-    assert quiet["verdict"] == warning["verdict"] == "allow"
-    assert quiet["reason"].startswith("[delegate-channel/allow]")
-    assert warning["reason"].startswith("[delegate-channel/warn]")
+    assert quiet == {"verdict": "allow", "harness": "", "model": "",
+                     "reason": "[delegate-channel/allow] 역할 매핑 미설정(delegate.developer.harness/.model)"}
+    assert delegate_channel.evaluate_hook(
+        guard_home, _payload("developer"), config_loader=lambda _home: unset) is None
+
+    for tier, conf in (
+        ("normal", {"delegate.developer.harness": "claude"}),
+        ("normal", {"delegate.developer.model": "opus"}),
+        ("normal", {"delegate.developer.harness": "gemini", "delegate.developer.model": "x"}),
+        ("hard", {"delegate.developer.harness": "claude", "delegate.developer.model": "opus",
+                  "delegate.developer.hard.harness": "claude"}),
+    ):
+        with pytest.raises(delegate_errors.DelegateError) as engine:
+            delegate_config.resolve_delegate(conf, "developer", tier, None, None, None)
+        expected = f"[delegate-channel/deny] 위임 설정 오류: {engine.value}"
+        judged = delegate_channel.decide(guard_home, "developer", tier, conf, "claude")
+        assert judged == {"verdict": "deny", "reason": expected, "harness": "", "model": ""}, conf
+        agent = "developer-hard" if tier == "hard" else "developer"
+        hook = delegate_channel.evaluate_hook(
+            guard_home, _payload(agent), config_loader=lambda _home, conf=conf: conf)
+        assert hook == {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny",
+            "permissionDecisionReason": expected}}
 
 
 def test_decide_cli_surfaces_native_warning_in_stable_four_fields(guard):
@@ -1473,3 +1510,79 @@ def test_claude_delegate_wrapper_and_driver_refuse_partial_update():
         assert left == (left_behind,)
         assert {wrapper, driver} <= set(group)
     assert hook_sets.hook_set_partial_update(pending, pending) == []
+
+
+def test_card_drift_warnings_name_the_fix_and_do_not_block(guard, tmp_path):
+    """카드를 읽었고 판정이 나온 경우(모델 불일치·지금 설정으로 렌더되지 않음)는 경고 후 통과다.
+
+    model 줄이 없는 카드(설정에 모델이 없을 때 렌더돼 주석으로 남은 줄)는 판독 실패가 아니라 미렌더로
+    진단하고 `pm-update` 를 안내한다. 경고 문구는 통과 이유를 `fail-open` 이 아닌 말로 적는다."""
+    conf = {"delegate.developer.harness": "claude", "delegate.developer.model": "opus"}
+    relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS[("developer", "normal")]
+    cases = (
+        ("commented", b'---\nname: developer\n# model: "<model>"  # TODO\n---\n', "카드 미렌더", "card_model=(없음)"),
+        ("token", b'---\nmodel: "{{DELEGATE_MODEL_DEVELOPER}}"\n---\n', "카드 미렌더", "card_model={{DELEGATE_MODEL_DEVELOPER}}"),
+        ("other-model", b'---\nmodel: "sonnet"\n---\n', "불일치", "card_model=sonnet"),
+    )
+    for state, body, kind, evidence in cases:
+        root = tmp_path / state
+        _write_agent_card(root, relative, body)
+        home = pm_paths.home_at(root)
+        judged = delegate_channel.decide(home, "developer", "normal", conf, "claude")
+        assert judged["verdict"] == "allow", state
+        reason = judged["reason"]
+        assert reason.startswith(f"[delegate-channel/warn] Claude native model {kind}("), reason
+        assert evidence in reason and reason.endswith("위임은 막지 않는다"), reason
+        assert "fail-open" not in reason
+        assert ("pm-update" in reason) == (kind == "카드 미렌더"), reason
+        hook = delegate_channel.evaluate_hook(home, _payload("developer"), config_loader=lambda _home: conf)
+        assert hook == {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": reason}}
+
+
+@pytest.mark.skipif(not posix_bash_supported(), reason="POSIX bash wrapper 실행 환경이 아님")
+def test_claude_delegate_hook_blocks_card_read_failure_and_non_object_tool_input(tmp_path):
+    """실제 래퍼 → 드라이버 경계 → 엔진 진입 파일 사슬에서, 카드를 읽지 못한 역할 위임과 tool_input 이
+    객체가 아닌 훅 입력은 rc 2 와 [delegate-channel/판정 실패] 로 막히고, 역할 매핑이 일부만 있는 설정은
+    엔진 거부(rc 0, deny JSON)로 막힌다. 카드를 고치면 같은 호출이 조용히 통과한다."""
+    install = tmp_path / "install"
+    shutil.copytree(CLAUDE_ADAPTER, install / ".claude",
+                    ignore=shutil.ignore_patterns("__pycache__", "skills", "agents"))
+    shutil.copytree(GUARD_PY.parent, install / ".project_manager" / "tools",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    wrapper = install / ".claude" / "delegate_channel_guard_hook.sh"
+    conf = install / ".project_manager" / "local.conf"
+
+    def run(payload):
+        return subprocess.run(["bash", str(wrapper)], input=json.dumps(payload).encode("utf-8"),
+                              capture_output=True, check=False)
+
+    def assert_blocked(payload, cause):
+        proc = run(payload)
+        assert proc.returncode == 2, proc.stderr
+        assert proc.stdout == b""
+        message = proc.stderr.decode("utf-8")
+        assert message.startswith(DELEGATE_NO_VERDICT_PREFIX + JUDGE_FAILED + "1: " + cause), message
+        assert message.endswith(DELEGATE_NO_VERDICT_TAIL) and message.count("\n") == 1, message
+
+    conf.write_text("delegate.developer.harness=claude\ndelegate.developer.model=opus\n", encoding="utf-8")
+    assert_blocked(_payload("developer"), "FileNotFoundError: ")
+    for tool_input in ("developer", None, ["developer"]):
+        payload = dict(_payload("developer"), tool_input=tool_input)
+        assert_blocked(payload, "TypeError: Claude PreToolUse 훅 입력 tool_input 이 JSON 객체가 아니다")
+    missing = _payload("developer")
+    del missing["tool_input"]
+    assert_blocked(missing, "TypeError: Claude PreToolUse 훅 입력 tool_input 이 JSON 객체가 아니다: NoneType")
+
+    _write_agent_card(install, Path(".claude/agents/developer.md"), b'---\nmodel: "opus"\n---\n')
+    healthy = run(_payload("developer"))
+    assert (healthy.returncode, healthy.stdout, healthy.stderr) == (0, b"", b"")
+
+    conf.write_text("delegate.developer.harness=claude\n", encoding="utf-8")
+    partial = run(_payload("developer"))
+    assert partial.returncode == 0 and partial.stderr == b""
+    output = json.loads(partial.stdout)["hookSpecificOutput"]
+    assert output["permissionDecision"] == "deny"
+    assert output["permissionDecisionReason"] == (
+        "[delegate-channel/deny] 위임 설정 오류: 역할 매핑 미설정(delegate.developer.harness/.model) — "
+        "말없는 대체 동작 금지. local.conf 에 delegate.<role>.harness/.model 을 설정하라."
+    )

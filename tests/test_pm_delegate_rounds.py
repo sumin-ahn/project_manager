@@ -4373,6 +4373,35 @@ def test_fail_open_when_pm_harness_marker_is_absent(pd, rounds_env, monkeypatch,
     assert "fail-open" in captured.err
 
 
+def test_prepare_with_unknown_pm_harness_skips_the_cross_judgment_without_calling_decide(
+        pd, rounds_env, monkeypatch, capsys):
+    """PM 하네스를 알 수 없으면(세션 환경 변수 없음) prepare 는 판정 함수를 부르지 않고 경고 뒤 통과한다.
+
+    판정 함수는 알 수 없는 하네스를 판정 입력으로 받지 않으므로(예외) 이 판단은 prepare 가 한다."""
+    pm_home, slot, tickets, _sync = rounds_env
+    monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
+    _write_local_conf(pm_home, {
+        "delegate.enabled": "true",
+        "delegate.architect.harness": "codex",
+        "delegate.architect.model": "gpt-5.6-sol",
+    })
+    _isolate_harness_env(monkeypatch)
+    _write_spec(tickets, "T-7915", rounds=("architect",))
+
+    def _unexpected(*_args, **_kwargs):
+        raise AssertionError("unknown PM harness must not reach the decision function")
+
+    monkeypatch.setattr(delegate_channel, "decide", _unexpected)
+    rc = _prepare_cli(pd, slot, "T-7915", "architect")
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.err.strip().splitlines()[0] == (
+        "[pm-delegate/warn] PM 하네스를 알 수 없음(하네스 세션 환경 변수가 없거나 둘 이상) — "
+        "cross 역할 거부 판정 없이 prepare 통과(fail-open)"
+    )
+
+
 def test_fail_open_when_pm_harness_markers_collide(pd, rounds_env, monkeypatch, capsys):
     """fail-open(b) — 중첩 세션(마커 2개 동시 일치)도 통과하되 침묵하지 않는다."""
     pm_home, slot, tickets, _sync = rounds_env
@@ -4473,7 +4502,10 @@ def test_master_switch_denial_follows_owner_conf_not_engine_copy_conf(
     pm_home, slot, tickets, _sync = rounds_env
     monkeypatch.setattr(delegate_execute, "_ticket_cli_owner", lambda _home, _cwd: pm_home)
     engine_copy = tmp_path / "engine-copy-without-switch"
-    engine_copy.mkdir()
+    # cross 판정은 Claude native 일치에서 카드 모델을 읽는다 — 엔진 사본에 렌더된 카드를 둔다.
+    card = engine_copy / ".claude" / "agents" / "developer.md"
+    card.parent.mkdir(parents=True)
+    card.write_text('---\nname: developer\nmodel: "opus"\n---\n', encoding="utf-8")
     monkeypatch.setattr(pd, "REPO", engine_copy)
 
     _isolate_harness_env(monkeypatch)
