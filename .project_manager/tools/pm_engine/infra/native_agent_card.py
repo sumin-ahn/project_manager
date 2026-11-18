@@ -283,8 +283,13 @@ def _read_known_regular_file(root: Path, relative: Path) -> str:
 def _read_claude_native_agent_model(
     home, role: str,
     tier: str,
-) -> tuple[str, Path]:
-    """Read one explicitly mapped Claude card and return its strict model scalar."""
+) -> tuple[str | None, Path]:
+    """Read one explicitly mapped Claude card and return its strict model scalar.
+
+    ``None`` is a card without a ``model`` line: rendered while local.conf had no
+    model for it (the line is left commented out), so Claude runs it on the
+    session model.  Anything the reader cannot read or parse raises.
+    """
     relative = CLAUDE_NATIVE_AGENT_CARDS.get((role, tier))
     if relative is None:
         raise ValueError(f"명시 agent card 매핑 없음({role}/{tier})")
@@ -303,7 +308,7 @@ def _read_claude_native_agent_model(
         if match is not None:
             values.append(match.group(1))
     if not values:
-        raise ValueError("frontmatter model 없음")
+        return None, relative
     if len(values) != 1:
         raise ValueError("frontmatter model 중복")
     return delegate_channel_rules._frontmatter_model_scalar(values[0]), relative

@@ -37,35 +37,28 @@ def _remediation(role: str, tier: str) -> str:
 
 
 def _claude_native_model_warning(home, role: str, tier: str, model: str) -> str:
-    """Return an allow+loud warning for card drift, otherwise an empty string."""
-    relative = native_agent_card.CLAUDE_NATIVE_AGENT_CARDS.get((role, tier))
-    shown_path = relative.as_posix() if relative is not None else "(명시 매핑 없음)"
-    try:
-        card_model, relative = native_agent_card._read_claude_native_agent_model(home, role, tier)
-    except (OSError, UnicodeError, ValueError, ImportError, NotImplementedError) as exc:
-        detail = " ".join(str(exc).split()) or type(exc).__name__
-        return (
-            f"[delegate-channel/warn] Claude native model 검사 실패"
-            f"(role={role}, tier={tier}, conf_model={model}, card={shown_path}, "
-            f"error={type(exc).__name__}: {detail}) — native 통과(fail-open)"
-        )
-    if delegate_channel_rules._is_unrendered_model_token(card_model):
-        # 카드가 아직 렌더되지 않았다 — 렌더 소스 트리(프레임워크 루트·templates)이거나 채택자
-        # 렌더가 실패한 상태다. 이건 conf 를 고칠 일이 아니라 `pm-update` 로 카드를 다시 렌더할
-        # 일이므로 "불일치" 와 다른 해결 방법을 낸다. 판정은 여전히 fail-open.
+    """Return an allow+loud warning for card drift, otherwise an empty string.
+
+    A card that cannot be read raises; the adapter boundary blocks the delegation call.
+    """
+    card_model, relative = native_agent_card._read_claude_native_agent_model(home, role, tier)
+    if card_model is None or delegate_channel_rules._is_unrendered_model_token(card_model):
+        # 카드가 지금 설정으로 렌더되지 않았다 — 렌더 소스 트리(프레임워크 루트·templates)의 토큰이거나,
+        # 설정에 모델이 없을 때 렌더돼 model 줄이 주석으로 남은 카드다. conf 를 고칠 일이 아니라
+        # `pm-update` 로 카드를 다시 렌더할 일이므로 "불일치" 와 다른 해결 방법을 낸다.
         return (
             f"[delegate-channel/warn] Claude native model 카드 미렌더"
             f"(role={role}, tier={tier}, conf_model={model}, "
-            f"card={relative.as_posix()}, card_model={card_model}) — "
-            "카드가 렌더 소스 상태다: 채택자 트리면 `pm-update` 로 카드를 다시 렌더하라. "
-            "native 통과(fail-open)"
+            f"card={relative.as_posix()}, card_model={card_model or '(없음)'}) — "
+            "카드가 지금 설정으로 렌더되지 않았다: 채택자 트리면 `pm-update` 로 카드를 다시 렌더하라. "
+            "위임은 막지 않는다"
         )
     if card_model != model:
         return (
             f"[delegate-channel/warn] Claude native model 불일치"
             f"(role={role}, tier={tier}, conf_model={model}, "
             f"card={relative.as_posix()}, card_model={card_model}) — "
-            "native 통과(fail-open)"
+            "위임은 막지 않는다"
         )
     return ""
 
@@ -89,39 +82,25 @@ def decide(
     conf: Mapping[str, object],
     self_harness: object,
 ) -> dict[str, str]:
-    """Apply decision-table rows 0 through 5 without a hook-specific envelope.
+    """Apply decision-table rows 0.5 through 5 without a hook-specific envelope.
 
-    Row 0.5 (master switch) sits between name normalisation and mapping
-    resolution: ``delegate.enabled=false`` denies every role spawn regardless of
-    channel.  Failures outside these rows are not verdicts: they propagate, and
-    the adapter boundary that ran the guard blocks that delegation call.
+    The entry normalises its input first: a known harness and a framework role and
+    tier.  Anything else is not a decision input and raises, like every failure
+    outside these rows; the adapter boundary that ran the guard blocks that
+    delegation call.  Row 0.5 (master switch) sits before mapping resolution:
+    ``delegate.enabled=false`` denies every role spawn regardless of channel.
     """
-    known_harnesses = delegate_env._known_harnesses()
     self_name = self_harness.strip().lower() if isinstance(self_harness, str) else ""
-
-    # Row 0: a broken/misidentified adapter must never false-deny delegation.
-    if not self_name or self_name not in known_harnesses:
-        return delegate_channel_rules._result(
-            "allow",
-            f"[delegate-channel/warn] self_harness={self_name or '(empty)'} 미상 — 통과(fail-open)",
-        )
-
+    if self_name not in delegate_env._known_harnesses():
+        raise ValueError(f"위임 채널 판정 입력의 하네스를 알 수 없다: {self_harness!r}")
     role_name = role.strip() if isinstance(role, str) else ""
     tier_name = tier.strip().lower() if isinstance(tier, str) else ""
-
-    # Row 1: unknown names are recorded instead of becoming a silent no-op.
-    # ``record`` is intentionally not ``warn``: adapters reserve user-facing
-    # warnings/system-context injection for decision infrastructure failures.
-    if role_name not in delegate_channel_rules.DELEGATE_ROLES or tier_name not in delegate_channel_rules.DELEGATE_TIERS:
-        return delegate_channel_rules._result(
-            "allow",
-            f"[delegate-channel/record] 역할/티어 정규화 실패({role_name or '(empty)'}/{tier_name or '(empty)'}) — 통과(fail-open)",
-        )
-    if tier_name == "hard" and role_name != "developer":
-        return delegate_channel_rules._result(
-            "allow",
-            f"[delegate-channel/record] 미지원 역할/티어({role_name}/{tier_name}) — 통과(fail-open)",
-        )
+    if (
+        role_name not in delegate_channel_rules.DELEGATE_ROLES
+        or tier_name not in delegate_channel_rules.DELEGATE_TIERS
+        or (tier_name == "hard" and role_name != "developer")
+    ):
+        raise ValueError(f"위임 채널 판정 입력의 역할/티어가 프레임워크 역할이 아니다: {role!r}/{tier!r}")
     if not isinstance(conf, Mapping):
         raise TypeError("delegate config must be a mapping")
 
@@ -135,26 +114,23 @@ def decide(
             f"[delegate-channel/deny] 위임이 꺼져 있습니다 — {native_agent_card._ENABLED_REMEDIATION}",
         )
 
-    if delegate_channel_rules._delegate_mapping_config_is_absent(conf):
-        return delegate_channel_rules._result("allow", "[delegate-channel/allow] 역할 매핑 미설정")
-    mapping_unset = delegate_channel_rules._mapping_is_unset(role_name, tier_name, conf)
-    harness, model, resolution_error = delegate_config._resolved_mapping(role_name, tier_name, conf)
-
-    # The engine rejects an absent/incomplete profile (hard included) instead
-    # of inheriting another tier.  This row keeps native available as an engine
-    # verdict (a warning pass), surfaces the same engine fact, and never
-    # prescribes an execution-impossible ``--tier hard`` redirect.
-    if resolution_error:
-        channel = "record" if mapping_unset else "warn"
+    # Row 2: a role (tier) without a harness/model mapping keeps native delegation;
+    # its card runs on the harness default model.  Hard never inherits normal.
+    if delegate_channel_rules._mapping_is_unset(role_name, tier_name, conf):
+        key = f"delegate.{role_name}" + (".hard" if tier_name == "hard" else "")
         return delegate_channel_rules._result(
-            "allow",
-            f"[delegate-channel/{channel}] 설정 해소 실패"
-            f"({resolution_error}) — native 통과(fail-open)",
+            "allow", f"[delegate-channel/allow] 역할 매핑 미설정({key}.harness/.model)"
         )
 
-    # Row 3: no configured destination leaves native delegation available.
-    if not harness:
-        return delegate_channel_rules._result("allow", "[delegate-channel/allow] 역할 harness 미설정")
+    # Row 3: a mapping the engine cannot resolve (harness or model missing, an
+    # unknown harness) is a configuration error.  Deny with the engine's own reason,
+    # the same words ``pm_delegate`` prints for this setting, so the operator knows
+    # which key to fix; never prescribe a redirect the engine itself would reject.
+    harness, model, resolution_error = delegate_config._resolved_mapping(role_name, tier_name, conf)
+    if resolution_error:
+        return delegate_channel_rules._result(
+            "deny", f"[delegate-channel/deny] 위임 설정 오류: {resolution_error}"
+        )
 
     # Row 4: the native surface matches configuration.
     if harness == self_name:
@@ -172,10 +148,9 @@ def decide(
         )
 
     # Row 5: cross-harness native spawn redirects to the recorded CLI.
-    shown_model = model or "(model 미설정)"
     return delegate_channel_rules._result(
         "deny",
-        f"[delegate-channel/deny] conf 는 {harness}/{shown_model} — "
+        f"[delegate-channel/deny] conf 는 {harness}/{model} — "
         f"{_remediation(role_name, tier_name)}",
         harness=harness,
         model=model,
@@ -233,9 +208,11 @@ def evaluate_hook(
     if tool_name != "Agent":
         return None
 
-    tool_input = payload.get("tool_input") or {}
+    tool_input = payload.get("tool_input")
     if not isinstance(tool_input, Mapping):
-        return None
+        raise TypeError(
+            f"Claude PreToolUse 훅 입력 tool_input 이 JSON 객체가 아니다: {type(tool_input).__name__}"
+        )
     normalized = delegate_channel_rules.normalize_agent_name(tool_input.get("subagent_type"), "claude")
     if normalized is None:
         return None
@@ -278,6 +255,8 @@ def _evaluate_codex_decision(
     cwd = payload.get("cwd")
     if not isinstance(cwd, str) or not _is_absolute_path(cwd.strip()):
         raise ValueError(f"Codex PreToolUse 훅 입력 cwd 가 절대경로가 아니다: {cwd!r}")
+    # spawn 인자가 객체가 아니거나 agent_type 이 문자열이 아니면 Codex 가 이 훅 뒤 인자 해석에서 그
+    # 호출을 거부해 서브에이전트가 뜨지 않는다(0.166.0 실측) — 판정 대상이 아니다.
     tool_input = payload.get("tool_input") or {}
     agent_name = (
         tool_input.get(delegate_channel_rules.CODEX_ROLE_INPUT_FIELD)
@@ -308,14 +287,13 @@ def _decide_agent_input(
     """CLI와 Codex 입력의 역할 정규화·설정 판독·채널 판정."""
     normalized = delegate_channel_rules.normalize_agent_name(agent_name, self_harness, tier)
     if normalized is None:
-        # 미지 하네스 판정을 역할 정규화보다 먼저 적용한다.
+        # 미지 하네스는 역할 정규화보다 먼저 판정 입력이 아니라고 올린다.
         if self_harness.strip().lower() not in delegate_env._known_harnesses():
-            result = decide(home, agent_name, tier or "normal", {}, self_harness)
-        else:
-            result = delegate_channel_rules._result(
-                "allow",
-                f"[delegate-channel/record] 에이전트명 정규화 실패({self_harness}/{agent_name}) — 통과(fail-open)",
-            )
+            raise ValueError(f"위임 채널 판정 입력의 하네스를 알 수 없다: {self_harness!r}")
+        result = delegate_channel_rules._result(
+            "allow",
+            f"[delegate-channel/record] 프레임워크 역할이 아닌 에이전트({self_harness}/{agent_name}) — 판정 대상 아님",
+        )
     else:
         role, tier = normalized
         result = decide(home, role, tier, config_loader(home), self_harness)

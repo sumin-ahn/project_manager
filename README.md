@@ -536,8 +536,11 @@ transport를 쓰고, 다르면 `pm_delegate.py` cross transport를 쓴다. `dele
 전체의 마스터 스위치이고 **기본은 허용**이다(채널 무관). 끄려면 `delegate.enabled=false`를
 명시하며, 그때 막히는 것은 `pm_delegate` 실행(rc=3)·`ticket prepare`(rc=3)·훅이 깔린 하네스의
 역할 spawn(deny)이다 — 훅 등록은 채택자 소유 파일이라 훅을 깔지 않은 구성의 ad-hoc native
-spawn까지 막지는 못한다. Claude native agent 카드의 `model:`이 설정과 어긋나거나 카드가 손상되면
-가드가 비차단 경고를 내며, 설정이나 카드를 자동으로 고치지 않는다.
+spawn까지 막지는 못한다. 역할 설정이 일부만 있거나(`harness`·`model` 중 하나만 있음) 하네스 이름이
+지원 목록에 없으면 훅이 깔린 하네스의 그 역할 spawn 을 `pm_delegate` 와 같은 오류 문구로 거부한다.
+그 역할의 설정이 아예 없으면 하네스 기본 모델로 띄운다. Claude native agent 카드의 `model:`이 설정과
+어긋나거나 카드가 지금 설정으로 렌더되지 않았으면 가드가 비차단 경고를 내고, 카드를 읽지 못하면(파일 없음·
+형식 오류·훅 실행기에 PyYAML 없음) 그 위임을 막는다. 설정이나 카드를 자동으로 고치지 않는다.
 
 역할·티어 카드는 세 하네스가 **같은 규칙**을 쓴다 — claude `.claude/agents/*.md` · codex
 `.codex/agents/*.toml` · opencode `.opencode/agents/*.md` 의 모델과 추론 강도(claude `effort` ·

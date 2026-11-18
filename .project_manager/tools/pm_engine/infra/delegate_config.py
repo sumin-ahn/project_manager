@@ -206,8 +206,8 @@ def _resolved_mapping(
     The engine owns the exact key contract: normal reads only
     ``delegate.<role>.*`` and hard reads only ``delegate.<role>.hard.*``;
     tuples are atomic and hard never inherits normal.  A configuration error is
-    returned as data so the guard's verdict row can report it (a warning pass)
-    without inventing a runnable redirect that the engine itself would reject.
+    returned as data so the guard's verdict row can deny with the engine's own
+    reason instead of inventing a redirect that the engine itself would reject.
     """
     try:
         harness, model, _reasoning = resolve_delegate(
