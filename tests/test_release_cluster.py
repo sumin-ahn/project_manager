@@ -276,7 +276,7 @@ def _force_opencode_compaction_threshold(dest: Path, model: str) -> None:
 
     `harness.opencode.ctx_window_tokens`는 PM 59의 격리/per-harness 방식으로 plugin 판정만 옮기고
     (압축 한도 기록의 opencode 항목도 같은 값으로 옮긴다 · `_override_ctx_record`),
-    실제 `session.compacted`는 같은 모델의 `limit.context-output` native 경계로 유도한다.
+    실제 압축(opencode 2.x 이벤트 `session.compaction.ended`)은 같은 모델의 `limit.context-output` native 경계로 유도한다.
     generic 예산이나 출하 template은 바꾸지 않는다.
     """
     conf = dest / ".project_manager" / "local.conf"
@@ -677,7 +677,7 @@ def test_release_cluster_claude_full_cluster(harness_tmp_path):
     """실 claude 전체 묶음 시험 + native auto-compaction이 snapshot을 재주입한다.
 
     PM 36 라이브 probe(`scratchpad/release_probe.py`·PASS·dev×15·reviewer×21)의 mechanics 를 옮긴 것.
-    claude 는 subprocess cwd 를 존중한다(`--dir` 불요). stream-json 으로 위임(subagent_type)을 관측하고
+    claude 는 subprocess cwd 를 작업 폴더로 쓴다. stream-json 으로 위임(subagent_type)을 관측하고
     side-effect(probe.txt·done)를 먼저 단언한다. 주 세션이 첫 단계에서 연 task 가 정확히 `cluster` 하나인지
     단언한 뒤 같은 세션을 낮은 native `--autocompact` 경계로 resume한다. 압축 뒤 첫 주 스레드 훅의
     checkpoint 1건 이상과 snapshot 전달, 모델 sentinel 응답을 함께 확인한다. API 과금.
@@ -887,7 +887,7 @@ def test_release_cluster_opencode_full_cluster(harness_tmp_path):
         )
     )
     assert checkpoint_increased, (
-        "opencode 강제 임계에서 session.compacted→checkpoint log/marker 증가분이 "
+        "opencode 강제 임계에서 session.compaction.ended→checkpoint log/marker 증가분이 "
         "발화하지 않음.\n" + trace
     )
     assert delivered_receipts, (
@@ -1178,7 +1178,7 @@ def test_release_cluster_multirepo_claude_full_cluster(harness_tmp_path):
     """실 claude(`claude-sonnet-4-6`)가 다중 저장소 홈(2 repo·공유 보드)에서 저장소마다 카드 흐름 묶음 시험을 닫는다.
 
     opencode 짝(`test_release_cluster_multirepo_opencode_full_cluster`)과 같은 홈·프롬프트·단언에 단일 claude
-    실행 방식(`--allowedTools Bash`·subprocess cwd 존중이라 `--dir` 불요)을 얹은 것이다. 프롬프트는
+    실행 방식(`--allowedTools Bash`·subprocess cwd 가 작업 폴더)을 얹은 것이다. 프롬프트는
     부트스트랩 줄과 저장소마다 카드 줄 7개(new·cluster new·promote·tier·claim·switch·종결)이고 direct
     complete 는 없다([[T-0958]]). 단언은 저장소마다 done 티켓 1개, 그 묶음 closed 와 base_branch `<repo>_1`,
     묶음 브랜치와 통합 브랜치의 cluster-done.txt 내용이다(`_assert_multirepo_cluster_side_effects`). 묶음 시험에
@@ -1189,7 +1189,7 @@ def test_release_cluster_multirepo_claude_full_cluster(harness_tmp_path):
     proc = subprocess.run(
         # `--allowedTools Bash`: 묶음 시험은 부트스트랩·카드 줄 실행(board.py·worktree_pool.py·ticket_finish.py)과
         # 파일 쓰기뿐이고 developer·reviewer 위임이 없어 Task 불요(단일 전체 묶음 시험과 다른 점). claude 는
-        # subprocess cwd 를 존중하므로 `--dir` 불요(opencode 와 다른 점). 결과 실체만 단언하므로 stream-json 도 불요.
+        # subprocess cwd 를 작업 폴더로 쓴다. 결과 실체만 단언하므로 stream-json 도 불요.
         ["claude", "-p", "--model", CLAUDE_MODEL,
          "--allowedTools", "Bash",
          "--dangerously-skip-permissions",
@@ -1568,7 +1568,7 @@ def test_release_cluster_claude_final_warn_driver_marker_contract(harness_tmp_pa
          ``.done`` 생산자는 relay driver 계약이며 T-0553에서 연결한다.
 
     turn2 LLM 콜은 추가 과금·비결정을 낳으므로 래퍼 실행으로 주입/멱등/marker 소유
-    계약을 결정적으로 검증한다. claude 는 subprocess cwd 를 존중한다(``--dir`` 불요).
+    계약을 결정적으로 검증한다. claude 는 subprocess cwd 를 작업 폴더로 쓴다.
     API 과금은 transcript 생성용 turn1 1콜만 발생한다.
     """
     # 설치가 기록하는 모델을 이 테스트의 실제 세션 모델로 둔다 — 고정 한도 픽스처 기본 이름이면

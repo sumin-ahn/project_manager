@@ -512,8 +512,8 @@ def _run_opencode_warn(dest: Path, attempts: int = 2) -> str:
     """opencode warn 세션 — 도구 호출로 2번째 모델 턴을 강제(그 턴의 system.transform 이 주입 소비).
 
     opencode 는 수 분 병리적 task hang(upstream·tool-loop 데드락) 이 있어 timeout + 1회 재시도까지만
-    (PM 지침·실측: opencode 1.17.19 + glm-5.2 에서 tool 사용 세션이 0바이트로 걸림·플러그인을
-    빼도 걸림=upstream·플러그인 무관). 그 hang 이 풀린 환경에서만 이 라이브가 통과한다(default-skip 이라
+    (PM 지침: tool 사용 세션이 0바이트로 걸린 실측이 있고 플러그인을 빼도 걸렸다=upstream·플러그인
+    무관). 그 hang 이 풀린 환경에서만 이 라이브가 통과한다(default-skip 이라
     회귀 무영향). 메커니즘 자체는 Tier1(실제 엔진 hook-context warn2 판정·plugin system.transform 전달)
     + T-0283 로드검사 + claude 라이브(동일 채널·주입-도달 실증)로 커버.
 

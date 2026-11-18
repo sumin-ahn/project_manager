@@ -681,8 +681,8 @@ def validate_reasoning(
 ) -> str | None:
     """실행 직전 확인 — reasoning 이 그 하네스·모델의 허용집합 원소인가. 미지정=None(조회 없음).
 
-    허용집합은 `reasoning_allowed` 가 정한다(실행과 같은 cwd·env 로 조회). 밖이면 fail-loud 다 —
-    하네스는 허용집합 밖 값을 오류 없이 버리므로 조용한 무시를 호출 전에 막는다."""
+    허용집합은 `reasoning_allowed` 가 정한다(실행과 같은 cwd·env 로 조회). 밖이면 fail-loud 다.
+    허용집합 밖 값은 하네스마다 버림·경고·실행 실패로 다르게 다뤄지므로 실행 전에 멈춘다."""
     value = normalize_reasoning(reasoning)
     if value is None:
         return None
@@ -690,8 +690,9 @@ def validate_reasoning(
     if value not in allowed:
         known = ", ".join(allowed) if allowed else "없음"
         raise HarnessContractError(
-            f"reasoning {value!r} 은 {harness} {model} 허용집합 ({known}) 밖 — 하네스는 허용집합 "
-            "밖 값을 오류 없이 버리므로 멈춘다. 추론 강도를 비우거나 허용집합 안 값으로 고친다."
+            f"reasoning {value!r} 은 {harness} {model} 허용집합 ({known}) 밖 — 허용집합 밖 값은 "
+            "하네스마다 버림·경고·실행 실패로 다르게 다뤄지므로 실행 전에 멈춘다. 추론 강도를 비우거나 "
+            "허용집합 안 값으로 고친다."
         )
     return value
 

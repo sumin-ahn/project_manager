@@ -42,6 +42,7 @@ import pytest
 from _fake_opencode import calls, install_fake_opencode, listing_for, path_with
 from _manager_home import _known_ctx_installation, known_ctx_overrides
 from _opencode_model import SHIPPED_MODEL, SHIPPED_MODEL_ID
+from _win_skip import posix_bash_supported
 from pm_engine.domain import conf_schema
 from pm_engine.infra import conf_store
 from pm_engine.infra import fs
@@ -1022,6 +1023,10 @@ T0943_LISTING = {
 }
 
 
+_needs_posix_fake = pytest.mark.skipif(
+    not posix_bash_supported(), reason="가짜 opencode 는 POSIX sh 스크립트다")
+
+
 def _t0943_fake_listing(tmp_path: Path, monkeypatch, limits: dict, *, rc: int = 0) -> Path:
     """PATH 앞에 `limits` 목록을 내는 가짜 opencode 를 둔다. 반환은 그 폴더(호출 기록이 있다)."""
     listing = listing_for({name: () for name in limits}, limits)
@@ -1042,6 +1047,7 @@ def _t0943_opencode_tree(tmp_path: Path) -> tuple[Path, Path]:
     return root, global_dir
 
 
+@_needs_posix_fake
 def test_t0943_opencode_target_minimum_and_output_cap(local_conf, tmp_path, monkeypatch):
     """AT-005 — 대상 모델 5개의 C 최솟값(qwen 262,144 − 32,000 = 230,144)으로 E 200,000·P 188,000,
     reserved 12,000, 모든 `limit.input` 200,000. 출력 예약은 min(limit.output, 256,000) 이다. 조회는 프로젝트
@@ -1102,6 +1108,7 @@ def _t0955_record(root: Path, local_conf) -> dict:
     return json.loads((root / local_conf.CTX_BUDGET_RELPATH).read_text(encoding="utf-8"))
 
 
+@_needs_posix_fake
 def test_t0955_unlisted_model_is_excluded_and_named(local_conf, tmp_path, monkeypatch, capsys):
     """AT-001 — 목록에 없는 전역 설정 모델(lmstudio)은 빼고 이름을 알린다. 목록에 있는 대상 5개로 반영하고
     프로젝트 파일에 lmstudio 항목을 만들지 않는다."""
@@ -1119,6 +1126,7 @@ def test_t0955_unlisted_model_is_excluded_and_named(local_conf, tmp_path, monkey
     assert f"{T0955_EXCLUDED}: lmstudio/local-x" in capsys.readouterr().err
 
 
+@_needs_posix_fake
 @pytest.mark.parametrize("case", ["unlisted", "no-provider-block"])
 def test_t0955_no_usable_opencode_model_is_not_applied(local_conf, tmp_path, monkeypatch, capsys, case):
     """AT-002 — 쓸 수 있는 opencode 모델이 0개면 반영하지 않는다. 반환 빈 튜플, 설정 파일 바이트 그대로,
@@ -1148,6 +1156,7 @@ def test_t0955_no_usable_opencode_model_is_not_applied(local_conf, tmp_path, mon
         assert f"{T0955_EXCLUDED}: {SHIPPED_MODEL}" in err, err
 
 
+@_needs_posix_fake
 @pytest.mark.parametrize("case", ["query-fails", "limit-malformed"])
 def test_t0955_model_list_failure_still_refuses(local_conf, tmp_path, monkeypatch, case):
     """AT-003 — 모델 목록 조회가 실패하거나 목록에 있는 대상 모델의 limit 이 양의 정수가 아니면 반영 전체를
@@ -1186,6 +1195,7 @@ def _t0955_install(tmp_path: Path, path: str):
     return dest, completed, f"--- stdout ---\n{completed.stdout[-3000:]}\n--- stderr ---\n{completed.stderr[-3000:]}"
 
 
+@_needs_posix_fake
 def test_t0955_opencode_install_with_unlisted_shipped_model(local_conf, tmp_path):
     """AT-004 — 출하 모델이 목록에 없는 opencode 에서 실제 `pm_import --new --harness opencode` 자식 프로세스가
     rc 0 으로 끝난다. 템플릿 `limit`·`compaction.reserved` 가 그대로이고 기록에 opencode 가 없으며 표준오류가 그
@@ -1210,6 +1220,7 @@ def test_t0955_opencode_install_without_opencode_refuses(tmp_path):
     assert not (dest / ".opencode").exists() and not (dest / ".git").exists(), output
 
 
+@_needs_posix_fake
 def test_t0955_update_apply_with_unlisted_shipped_model(tmp_path, monkeypatch, capsys):
     """AT-005 — 출하 모델이 목록에 없을 때 갱신의 반영 단계(`update_adapters.apply_harness_ctx_limits`)가 True 를
     돌려주고 멈춤 문구 없이 제외 모델을 알린다."""

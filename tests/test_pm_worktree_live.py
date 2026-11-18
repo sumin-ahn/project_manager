@@ -340,7 +340,7 @@ def test_pm_worktree_live_claude(harness_tmp_path, monkeypatch):
     """실 claude 가 pm-worktree 스킬만 보고 dev/sync 시나리오를 운영·실 git 3 단언 (hard).
 
     스킬(SKILL.md)만 컨텍스트로 주고 [dev 지정 → 재동기]를 시킨다 — 진입문서 경로 미제공. claude 는
-    subprocess cwd 를 존중(`--dir` 불요)·stream-json 으로 backbone(worktree_pool.py dev·sync) 실행을
+    subprocess cwd 를 작업 폴더로 쓴다. stream-json 으로 backbone(worktree_pool.py dev·sync) 실행을
     **hard** 관측(false-green 백스톱)하고, 실 git 상태(dev no-clobber·consume 재동기·슬롯 no-track)를
     hard 단언한다. 초기 비공허(`_assert_initial_state`)라 미실행 시 red. API 과금(dev+sync 2콜).
     """

@@ -450,7 +450,7 @@ def test_pm_release_live_claude(harness_tmp_path):
     공개 main push/gh 자동실행 안 함(safety) 을 stream-json 으로 hard 관측 + green live-test.json.
 
     스킬(SKILL.md)만 컨텍스트로 주고 [release live-test 기록 → 승인 없이는 push 안 함]을 시킨다 —
-    진입문서 경로 미제공. claude 는 subprocess cwd 존중(`--dir` 불요)·stream-json Bash tool-call 로
+    진입문서 경로 미제공. claude 는 subprocess cwd 를 작업 폴더로 쓴다. stream-json Bash tool-call 로
     (1) live-test record 실행 (2) `git push`/`gh release create` **부재** 를 hard 관측하고, live-test.json
     이 **green**(status=pass·n==pin·rc=0·존재만 아님)인지 hard 단언한다. 홈엔 원격이 없어 push 시도도
     비가역 부작용 0(safety).

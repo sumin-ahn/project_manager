@@ -324,12 +324,14 @@ def test_driver_watchdog_runner_calls_engine(monkeypatch, tmp_path):
                         task="t", cwd=str(tmp_path), agent="pm", stdin=None, stdout=None)
     driver = built["driver"]
     assert driver._stall_error_types == (watchdog.StallWatchdogError,)
-    result = driver.runner(["opencode", "run", "x"], capture_output=True, text=True, timeout=600)
+    result = driver.runner(["opencode", "run", "x"], capture_output=True, text=True, timeout=600,
+                           cwd=str(tmp_path))
     assert result.returncode == 0 and result.stdout == "ok"
     assert calls["cmd"] == ["opencode", "run", "x"]
     assert calls["kw"]["first_event_timeout"] == 7.0
     assert calls["kw"]["overall_timeout"] == 600      # driver 의 600s hard 가드 전달.
     assert calls["kw"]["retries"] == 3
+    assert calls["kw"]["cwd"] == str(tmp_path)          # relay 턴·세션 조회의 child cwd 전달.
 
 
 def test_driver_turn_failsoft_on_stall():

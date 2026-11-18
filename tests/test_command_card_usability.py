@@ -715,7 +715,7 @@ def test_command_card_usability_claude(harness_tmp_path):
     카드(ADR-0045)만 컨텍스트로 주고 카드 순서의 new→cluster new→promote→claim→종결을 시킨다 — 진입문서 경로 미제공.
     stream-json 으로 실행 커맨드·결과를 파싱해 --help/-h 호출·조작 재시도 0·**각 op 첫 실행 rc0**
     (tool_result is_error)를 hard 단언하고, side-effect(ticket done)로 완주를 확증한다. flake·timeout 은
-    단건 1회 재실행으로 받아들임. claude 는 subprocess cwd 를 존중(`--dir` 불요). API 과금.
+    단건 1회 재실행으로 받아들임. claude 는 subprocess cwd 를 작업 폴더로 쓴다. API 과금.
     """
     def run_attempt(attempt: int) -> tuple[bool, str]:
         dest = _import_attempt(harness_tmp_path, "claude", attempt)

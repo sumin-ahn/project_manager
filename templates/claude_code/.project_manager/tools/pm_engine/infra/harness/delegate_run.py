@@ -70,13 +70,15 @@ _INFRA_QUOTA_PATTERNS: tuple[re.Pattern[str], ...] = (
     # 연결하므로 독립 JSON 값(`"error":"rate_limit"` 류)은 항상 단독 줄이고, 스캔 대상 비-reply
     # 필드(예: permission_denials 의 command 에코)에 실린 산문 문장-중간 표기는 구조적으로
     # 배제된다(짧은 단독 토큰의 오분류=부당 대체 하네스 차단·`\s*` 는 CRLF/공백 보험).
-    # 반면 opencode passthrough 계열(아래 rate_limit_error 등)은 responseBody **JSON 문자열 안에**
-    # 박혀 오므로 줄 고정 금지 — substring `\b` 를 유지해야 실측 양성이 산다(비대칭은 의도).
+    # 반면 opencode passthrough 계열(아래 rate_limit_error 등)은 opencode 2.x 응답 본문
+    # (`error.response.body`) **JSON 문자열 안에** 박혀 오므로 줄 고정 금지 — substring `\b` 를
+    # 유지해야 실측 양성이 산다(비대칭은 의도).
     # claude 2.1.220 바이너리의 429/usage-limit/credits 경로 `_u({error:"rate_limit"})`.
     re.compile(r"^\s*rate_limit\s*$", re.IGNORECASE | re.MULTILINE),
     # claude 2.1.220 바이너리의 credit-balance HTTP 400 경로 error enum.
     re.compile(r"^\s*billing_error\s*$", re.IGNORECASE | re.MULTILINE),
-    # Anthropic 공식 429 enum; opencode는 상류 API enum을 responseBody에 verbatim passthrough한다.
+    # Anthropic 공식 429 enum; opencode는 상류 API enum을 opencode 2.x 응답 본문(`error.response.body`)에
+    # verbatim passthrough한다.
     re.compile(r"\brate_limit_error\b", re.IGNORECASE),
     # Anthropic 공식 메시지이자 claude 2.1.220 바이너리 자체 감지 regex와 같은 구조.
     re.compile(r"\bcredit balance (?:is )?too low\b", re.IGNORECASE),

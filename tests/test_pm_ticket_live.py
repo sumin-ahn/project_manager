@@ -164,7 +164,7 @@ def test_pm_ticket_live_claude(harness_tmp_path):
     """실 claude 가 pm-ticket 스킬만 보고 자족적 티켓을 authoring·실 board 상태 단언(hard).
 
     스킬(SKILL.md)만 컨텍스트로 주고 [발행 → 5절 fill → promote]를 시킨다 — 진입문서 미제공. claude 는
-    subprocess cwd 존중(`--dir` 불요). 발행된 티켓이 존재 + placeholder 0 + 주제 marker(SIGTERM) 포함을
+    subprocess cwd 를 작업 폴더로 쓴다. 발행된 티켓이 존재 + placeholder 0 + 주제 marker(SIGTERM) 포함을
     hard 단언(미실행/미충전 시 red). API 과금."""
     dest = _import_adopter(harness_tmp_path, "claude")
     prompt = _authoring_prompt(_SKILL.read_text(encoding="utf-8"))
