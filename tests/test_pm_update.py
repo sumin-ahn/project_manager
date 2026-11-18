@@ -7539,7 +7539,8 @@ def test_update_moves_removed_stall_watchdog_plugin_out_of_an_opencode_install(t
         assert f"[퇴역] {rel} ->" in run.stdout, run.stdout
         backups = sorted((dest / ".pm_import_backups").glob(f"*/{rel}"))
         assert [path.read_text(encoding="utf-8") for path in backups] == [f"// 손으로 고친 옛 사본 {rel}\n"]
-    assert (dest / ".opencode" / "plugins" / "ctx-guard.js").is_file()
+    assert sorted(path.name for path in (dest / ".opencode" / "plugins").glob("*.js")) == [
+        "ctx-guard.js", "delegate-channel.js", "git-check.js", "principle-recall.js", "safe-write.js"]
 
 
 # ── T-0951 갱신 절차 전환 — 전달 프로세스(엔진 코드만)와 완료 프로세스(나머지) ──────────────────────
