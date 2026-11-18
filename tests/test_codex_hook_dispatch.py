@@ -1054,9 +1054,12 @@ def test_pretooluse_wrapper_blocks_without_python_or_dispatcher(dispatcher, tmp_
     empty_bin = tmp_path / "empty-bin"
     empty_bin.mkdir()
     broken = _adopter_tree(tmp_path, conf_lines=_CROSS_CONF, dispatcher_body=")(\n")
+    # 0바이트 디스패처는 rc 0 과 빈 출력으로 끝난다. 래퍼의 빈 출력 갈래가 막는 응답을 내야 한다.
+    zero_byte = _adopter_tree(tmp_path / "zero-byte", conf_lines=_CROSS_CONF, dispatcher_body="")
     expected_stdout = _pretooluse_wrapper_fallback(dispatcher, "command") + "\n"
     for label, cwd, env in (("Python 실행기 없음", tmp_path, {"PATH": str(empty_bin)}),
-                            ("디스패처 문법 오류", broken, None)):
+                            ("디스패처 문법 오류", broken, None),
+                            ("디스패처 빈 출력", zero_byte, None)):
         completed = subprocess.run(
             [bash, "-c", _entry_handler("PreToolUse")["command"]], cwd=cwd, env=env,
             input=json.dumps(_spawn_payload()), text=True, capture_output=True,
