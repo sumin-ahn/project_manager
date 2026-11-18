@@ -28,7 +28,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from _fake_opencode import OLLAMA_LISTING, install_fake_opencode, path_with
+from _fake_opencode import OLLAMA_LISTING, install_fake_opencode, listing_for, path_with
 from _manager_home import tree_snapshot
 from _textio import utf8_child_env
 from _win_skip import posix_bash_supported
@@ -108,7 +108,8 @@ def test_the_response_never_carries_the_free_text_field(pc, capsys):
 
     rc = config_models.cmd_delegate_models(pm_paths.home_at(pc.REPO),
         SimpleNamespace(harness="opencode", json=True),
-        listing=lambda source: contract.ModelListing(("provider/model",), {"provider/model": ()}))
+        listing=lambda source: contract.ModelListing(
+            ("provider/model",), {"provider/model": ()}, {"provider/model": {"context": 200000, "output": 32000}}))
     live = json.loads(capsys.readouterr().out.strip())
 
     assert rc == 0
@@ -179,7 +180,7 @@ def test_the_lookup_declares_no_new_timeout_knob():
 @pytest.mark.skipif(not posix_bash_supported(), reason="가짜 opencode 는 POSIX sh 스크립트다")
 def test_an_empty_live_list_is_never_a_success(tmp_path):
     """조회가 0개를 주면 성공이 아니다 — 빈 목록을 성공으로 위장하지 않는다."""
-    fakebin = install_fake_opencode(tmp_path / "fakebin", "")
+    fakebin = install_fake_opencode(tmp_path / "fakebin", listing_for({}))
 
     completed = _run(*MODELS_ARGV, "--harness", "opencode", "--json",
                      env_extra={"PATH": path_with(fakebin)})

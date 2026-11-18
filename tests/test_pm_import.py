@@ -192,7 +192,7 @@ def _known_install_capacity_fixture(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _hermetic_opencode_models(request, pm_import, monkeypatch):
-    """T-0033: main() 의 opencode 경로(resolve_opencode_model)가 실제 `opencode models` CLI 를
+    """T-0033: main() 의 opencode 경로(resolve_opencode_model)가 실제 opencode 모델 목록 조회를
     호출하지 않도록 `_real_models_runner` 를 (False, []) 로 고정한다.
 
     이게 없으면 opencode 가 설치된 개발/CI 환경에서 main(--harness opencode) 가 라이브 `opencode
@@ -3482,18 +3482,18 @@ def test_git_init_failure_aborts_before_copy(pm_import, tmp_path, monkeypatch):
     assert rc == 1
 
 
-# ── T-0033: opencode 모델 결정적 해소 (opencode models 조회·대화형·플래그·TODO 대체 동작) ──
-# {{OPENCODE_PRO_MODEL}} 은 LLM fill 추측이 아니라 `opencode models` 결정적 조회로 해소한다.
-# `opencode models` subprocess 와 stdin(대화형 선택)은 *주입 가능 교체 지점* 으로 stub 한다 —
+# ── T-0033: opencode 모델 결정적 해소 (opencode 모델 목록 조회·대화형·플래그·TODO 대체 동작) ──
+# {{OPENCODE_PRO_MODEL}} 은 LLM fill 추측이 아니라 opencode 모델 목록 결정적 조회로 해소한다.
+# opencode 모델 목록 조회와 stdin(대화형 선택)은 *주입 가능 교체 지점* 으로 stub 한다 —
 # 라이브 opencode CLI 는 절대 실행하지 않는다(기존 fill runner 주입 패턴과 동일).
 
 OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
-# `opencode models` 실측 출력 형식(줄당 provider/model) — stub 가 흉내 낸다.
+# opencode 모델 목록 조회 결과(provider/model 이름 목록)를 stub 가 흉내 낸다.
 _FAKE_MODELS = ["ollama/gemma4:26b", "opencode/big-pickle", "anthropic/claude-x"]
 
 
 def _stub_models_runner(ok=True, models=None):
-    """`opencode models` 조회 교체 지점 stub — 라이브 CLI 미실행. (ok, models) 고정 반환."""
+    """opencode 모델 목록 조회 교체 지점 stub — 라이브 CLI 미실행. (ok, models) 고정 반환."""
     payload = list(models) if models is not None else list(_FAKE_MODELS)
 
     def _runner(source=None):
@@ -3598,7 +3598,7 @@ def test_opencode_model_flag_substitutes(render_home, pm_import, tmp_path):
 
 
 def test_opencode_model_flag_warns_when_not_in_available(render_home, pm_import, tmp_path, capsys):
-    """플래그 모델이 `opencode models` 목록에 없어도 *경고만* 하고 사용자 의도대로 치환(사설 모델)."""
+    """플래그 모델이 opencode 모델 목록에 없어도 *경고만* 하고 사용자 의도대로 치환(사설 모델)."""
     dest = _opencode_dest_with_token(pm_import, tmp_path, "FlagWarn")
     relpaths = _copied_relpaths_of(dest)
     result = import_fill.resolve_opencode_model(render_home,
@@ -3615,7 +3615,7 @@ def test_opencode_model_flag_warns_when_not_in_available(render_home, pm_import,
 # ── DoD ②: 대화형 선택 (models stub + stdin stub) → 선택 모델로 치환 ───────────
 
 def test_opencode_model_interactive_selection(render_home, pm_import, tmp_path):
-    """stdin tty + `opencode models` 조회 성공 → 번호목록·선택 입력 → 선택 모델로 치환."""
+    """stdin tty + opencode 모델 목록 조회 성공 → 번호목록·선택 입력 → 선택 모델로 치환."""
     dest = _opencode_dest_with_token(pm_import, tmp_path, "Interactive")
     relpaths = _copied_relpaths_of(dest)
 
@@ -3902,7 +3902,7 @@ def test_record_opencode_model_graceful_when_conf_absent(pm_import, tmp_path):
 # ── DoD ⑤: dry-run 계획 — 경로·플래그값·tty 여부만 출력, 파일변경·실호출 0 ───────
 
 def test_dry_run_opencode_model_plan_flag(pm_import, tmp_path, capsys):
-    """--dry-run + opencode + --opencode-model: flag 경로 계획 출력, 파일·`opencode models` 0."""
+    """--dry-run + opencode + --opencode-model: flag 경로 계획 출력, 파일·opencode 모델 목록 조회 0."""
     dest = tmp_path / "dryflag"
     rc = import_cmd.main(pm_paths.home_at(pm_import.REPO), ["--new", str(dest), "--harness", "opencode", "--name", "DryFlag",
                          "--opencode-model", "ollama/qwen3.6:27b", "--dry-run"])

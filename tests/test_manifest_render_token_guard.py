@@ -25,7 +25,7 @@ manifest 에 **bare**(무 `@render`) 로 등재된 경로는 `pm_update` 가 byt
   (D) ② 소비처가 실제로 돈다 — `ensure_task_pm_state`·`pm_engine.cli.board_init.cmd_init` 산출물의 날짜 = 생성 시각.
   (E) e2e — import → `pm_update` 왕복 후 대상 문서 byte 불변(진동 0·샌드박스 재현 시나리오 기록).
 
-기계 테스트 — 라이브 하니스·네트워크 0(`opencode models` 조회 stub·framework 사본은 비-git).
+기계 테스트 — 라이브 하니스·네트워크 0(opencode 모델 목록 조회 stub·framework 사본은 비-git).
 """
 from __future__ import annotations
 
@@ -94,7 +94,7 @@ def _load(name: str, alias: str | None = None):
 @pytest.fixture(scope="module")
 def pm_import():
     mod = _load("pm_import")
-    # hermetic — 라이브 `opencode models` CLI 미호출(미설치 동치).
+    # hermetic — 라이브 opencode 모델 목록 조회 미호출(미설치 동치).
     return mod
 
 

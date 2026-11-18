@@ -56,7 +56,7 @@ def pm_import():
 
 @pytest.fixture(autouse=True)
 def _hermetic_opencode_models(pm_import, monkeypatch):
-    """T-0033: main(--harness opencode) 가 실제 `opencode models` CLI 를 호출하지 않도록
+    """T-0033: main(--harness opencode) 가 실제 opencode 모델 목록 조회를 호출하지 않도록
     `_real_models_runner` 를 (False, []) 로 고정 — opencode 설치 환경서도 fill 테스트가 hermetic
     (미설치 동치 = 모델 토큰 TODO 대체 동작, fill 단계는 모델 토큰과 무관).
     """
@@ -228,7 +228,7 @@ def test_fill_auto_stub_resolves_free_form(pm_import, tmp_path):
 def test_fill_auto_stub_opencode_excludes_model_token(pm_import, tmp_path, monkeypatch):
     """opencode 트리: {{OPENCODE_PRO_MODEL}} 은 LLM fill 후보가 *아니다*(T-0033 결정적 분리).
 
-    모델 토큰은 resolve_opencode_model(결정적 `opencode models` 조회)이 전담하므로 fill 의
+    모델 토큰은 resolve_opencode_model(결정적 opencode 모델 목록 조회)이 전담하므로 fill 의
     제안 값에 들어가면 안 된다(중복·환각 제거). 자유서술 3종만 fill 대상이다.
 
     main 의 정상 파이프라인은 substitute_placeholders 직후 resolve_opencode_model 이 돌아
@@ -1090,4 +1090,4 @@ def test_resolve_opencode_model_real_runner_gets_the_opencode_source(render_home
     result = import_fill.resolve_opencode_model(render_home,
         tmp_path, {Path(".opencode/agents/pm.md")}, model_arg="ollama/x")
     assert result.path == "flag"
-    assert seen == [("opencode", "models", "--verbose")]
+    assert seen == [("opencode", "api", "GET", "/api/model", "--standalone")]

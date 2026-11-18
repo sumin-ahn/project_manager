@@ -804,7 +804,7 @@ def _live_runner_with_model(model: str):
 
 # ── 모델 목록 조회(`contract.model_listing`) — 모델과 모델별 variants (T-0946) ──────────────────
 # 조회 실행·판독·시간 상한의 주인은 contract 하나다(pm_import 에서 옮겨 왔다). 가짜 실행 파일은
-# 실제 `opencode models --verbose` 출력 형식을 재현한다(`_fake_opencode`).
+# 실제 `opencode api GET /api/model --standalone` 출력 형식을 재현한다(`_fake_opencode`).
 from _fake_opencode import (  # noqa: E402
     OLLAMA_LISTING, calls, install_fake_opencode, listing_for, path_with,
 )
@@ -822,8 +822,9 @@ def _fake_env(folder: Path) -> dict[str, str]:
 
 
 @_needs_posix_fake
-def test_model_listing_reads_models_and_variants(orch, tmp_path):
-    """머리 줄 순서로 모델을, 모델 객체의 `variants` 키를 원문 순서로 읽고 같은 조건은 한 번만 조회한다."""
+def test_model_listing_reads_models_variants_and_limits(orch, tmp_path):
+    """응답 순서로 모델(`providerID/id`)을, 모델의 `variants` id 를 원문 순서로, `limit` 을 그대로 읽고 같은 조건은
+    한 번만 조회한다."""
     fakebin = install_fake_opencode(tmp_path / "fakebin", OLLAMA_LISTING)
     env = _fake_env(fakebin)
 
@@ -835,10 +836,12 @@ def test_model_listing_reads_models_and_variants(orch, tmp_path):
         "ollama/glm-5.2:cloud": (),
         "ollama/ornith1.5:35b-a3b": ("low", "medium", "high"),
     }
+    assert listing.limits == {"ollama/glm-5.2:cloud": {"context": 200000, "output": 32000},
+                              "ollama/ornith1.5:35b-a3b": {"context": 200000, "output": 32000}}
     assert again == listing
     recorded = calls(fakebin)
     assert len(recorded) == 1, f"같은 조건의 조회가 다시 실행됐다: {recorded}"
-    assert recorded[0][1] == "models --verbose"
+    assert recorded[0][1] == "api GET /api/model --standalone"
     assert contract.model_listing(contract.MODEL_SOURCE["claude"], cwd=tmp_path, env={}).variants is None
 
 
@@ -850,7 +853,7 @@ def test_model_listing_stops_on_lookup_failure(orch, tmp_path, monkeypatch):
     with pytest.raises(contract.HarnessContractError) as excinfo:
         contract.model_listing(source, cwd=tmp_path, env=_fake_env(failing))
     message = str(excinfo.value)
-    assert "opencode models --verbose" in message and "rc=7" in message and "boom" in message
+    assert "opencode api GET /api/model --standalone" in message and "rc=7" in message and "boom" in message
 
     empty = tmp_path / "empty-bin"
     empty.mkdir()
@@ -858,16 +861,17 @@ def test_model_listing_stops_on_lookup_failure(orch, tmp_path, monkeypatch):
         contract.model_listing(source, cwd=tmp_path, env={"PATH": str(empty)})
     assert "PATH 부재" in str(excinfo.value)
 
-    without_variants = OLLAMA_LISTING.replace('  "variants": {}\n', '  "other": {}\n')
+    without_variants = OLLAMA_LISTING.replace('"variants": []', '"other": []', 1)
+    without_limit = json.dumps({"data": [{"providerID": "ollama", "id": "m", "variants": []}]})
     assert without_variants != OLLAMA_LISTING
     codex_catalog = json.dumps({"models": [{"slug": "gpt-5.6-sol"}]})
-    for index, listing in enumerate((without_variants, "", codex_catalog)):
+    for index, listing in enumerate((without_variants, without_limit, "", codex_catalog)):
         broken = install_fake_opencode(tmp_path / f"broken-{index}", listing)
         with pytest.raises(contract.HarnessContractError):
             contract.model_listing(source, cwd=tmp_path, env=_fake_env(broken))
 
     def _raise_timeout(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired(cmd="opencode models --verbose", timeout=60)
+        raise subprocess.TimeoutExpired(cmd="opencode api GET /api/model --standalone", timeout=60)
 
     monkeypatch.delenv("PM_OPENCODE_MODELS_TIMEOUT", raising=False)
     monkeypatch.setattr(contract, "resolve_executable", lambda name, env: name)
@@ -886,8 +890,8 @@ def test_reasoning_allowed_sources_partition_the_harnesses(orch, tmp_path):
     assert static | per_model == set(conf_schema.HARNESS_CHOICES)
     assert "opencode" not in conf_schema.REASONING_ALLOWED, "opencode 정적 허용값 행이 남았다"
     for harness in contract.PER_MODEL_REASONING_HARNESSES:
-        assert contract.MODEL_SOURCE[harness].parse == "opencode-verbose", harness
-    assert contract.MODEL_SOURCE["opencode"].command == ("opencode", "models", "--verbose")
+        assert contract.MODEL_SOURCE[harness].parse == "opencode-api-model", harness
+    assert contract.MODEL_SOURCE["opencode"].command == ("opencode", "api", "GET", "/api/model", "--standalone")
     assert contract.reasoning_allowed("claude", None, cwd=tmp_path, env={}) == (
         "low", "medium", "high", "xhigh", "max")
     with pytest.raises(contract.HarnessContractError):
@@ -950,7 +954,7 @@ def test_model_listing_uses_the_resolved_timeout(orch, tmp_path, monkeypatch, ba
 
     monkeypatch.setattr(contract.subprocess, "run", _capture)
     listing = contract.model_listing(_codex_source(orch), cwd=tmp_path, env={"A": "1"})
-    assert listing == contract.ModelListing(("gpt-6-astra",), None)
+    assert listing == contract.ModelListing(("gpt-6-astra",), None, None)
     assert seen["timeout"] == 200
     assert seen["argv"] == ["codex", "debug", "models"]
     assert seen["cwd"] == str(tmp_path) and seen["env"] == {"A": "1"}
@@ -1005,21 +1009,24 @@ def test_a_catalog_that_does_not_parse_is_a_failure(orch, tmp_path, monkeypatch,
 def test_an_undeclared_source_kind_or_parse_name_is_fail_loud(orch, tmp_path):
     """표가 모르는 kind·판독 이름은 선언과 판정이 갈린 것이다 — 아무 형식으로나 읽지 않는다."""
     for source in (
-        contract.ModelSource("nope", (), None, None, "", ""),
-        contract.ModelSource("live", (), ("x",), "nope", "", ""),
+        contract.ModelSource("nope", (), None, None, "", "", ""),
+        contract.ModelSource("live", (), ("x",), "nope", "", "", ""),
     ):
         with pytest.raises(contract.HarnessContractError):
             contract.model_listing(source, cwd=tmp_path, env={})
 
 
-def test_listing_for_matches_the_verbose_output_shape():
-    """가짜 출력은 실측 형식(머리 줄 + indent 2 JSON, variants 없는 모델은 `{}`)을 그대로 낸다."""
-    assert OLLAMA_LISTING.startswith(
-        'ollama/glm-5.2:cloud\n{\n  "id": "glm-5.2:cloud",\n  "providerID": "ollama",\n'
-        '  "variants": {}\n}\nollama/ornith1.5:35b-a3b\n{\n')
-    assert '  "variants": {\n    "low": {},\n    "medium": {},\n    "high": {}\n  }\n}\n' \
-        in OLLAMA_LISTING
-    assert listing_for({}) == ""
+def test_listing_for_matches_the_api_model_shape():
+    """가짜 출력은 실측 형식(`{"location", "data": [{providerID, id, variants: [{id}], limit}]}`)을 그대로 낸다."""
+    document = json.loads(OLLAMA_LISTING)
+    assert set(document) == {"location", "data"}
+    assert document["data"] == [
+        {"id": "glm-5.2:cloud", "providerID": "ollama", "variants": [],
+         "limit": {"context": 200000, "output": 32000}},
+        {"id": "ornith1.5:35b-a3b", "providerID": "ollama",
+         "variants": [{"id": "low"}, {"id": "medium"}, {"id": "high"}],
+         "limit": {"context": 200000, "output": 32000}}]
+    assert json.loads(listing_for({}))["data"] == []
 
 
 # ── 실행 파일 해소 한 곳(`resolve_executable`) — 세 실행 자리가 쓴다 (T-0946 리뷰 03 F-001) ─────────────
@@ -1078,7 +1085,7 @@ def test_harness_cli_spawns_resolve_executable_to_the_found_path(orch, tmp_path,
     monkeypatch.setattr(contract.subprocess, "run", _run)
     env = {"PATH": str(tmp_path / "npm")}
     contract.model_listing(contract.MODEL_SOURCE["opencode"], cwd=tmp_path / "listing", env=env)
-    assert seen["argv"] == [shim, "models", "--verbose"]
+    assert seen["argv"] == [shim, "api", "GET", "/api/model", "--standalone"]
     assert looked_up[-1] == ("opencode", str(tmp_path / "npm")), "해소가 자식 env 의 PATH 를 보지 않았다"
 
     recorder = _RecordingPopen()
@@ -1131,9 +1138,9 @@ def test_harness_cli_spawns_resolve_executable_posix_unchanged(orch, tmp_path):
     env = _fake_env(fakebin)
     resolved = contract.resolve_executable("opencode", env)
     assert resolved == shutil.which("opencode", path=env["PATH"]) == str(fakebin / "opencode")
-    proc = watchdog._WatchedPopen(["opencode", "models", "--verbose"], cwd=str(tmp_path), env=env)
+    proc = watchdog._WatchedPopen(["opencode", "api", "GET", "/api/model", "--standalone"], cwd=str(tmp_path), env=env)
     stdout, _stderr = proc.communicate(timeout=30)
-    assert proc.returncode == 0 and stdout.startswith("ollama/glm-5.2:cloud")
+    assert proc.returncode == 0 and json.loads(stdout)["data"][0]["id"] == "glm-5.2:cloud"
     with pytest.raises(FileNotFoundError):
         contract.resolve_executable("opencode", {"PATH": str(tmp_path / "nowhere")})
 

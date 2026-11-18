@@ -274,9 +274,10 @@ class ModelSource(NamedTuple):
       · `alias`  — CLI 가 계약한 별칭이 `values` 에 있다(그 CLI `--help` 실측).
       · `live`   — `command` 가 목록을 준다. 산출 형식은 CLI 마다 달라 `parse` 가 **값으로**
                    고른다(하네스 이름 분기 0). 조회 실행은 `model_listing` 하나다. 판독 이름은
-                   `json-slug`(모델 목록만)와 `opencode-verbose`(모델 목록과 모델별 variants)다.
+                   `json-slug`(모델 목록만)와 `opencode-api-model`(모델 목록과 모델별 variants·limit)다.
 
     `value_format`·`how_to_check` 는 사람 안내 문구다(`pm_config` 의 `[m]` 위임 모델 안내).
+    `failure_note` 는 조회 명령이 rc≠0 으로 끝났을 때 사유 앞에 붙이는 고정 문구다(`model_listing`).
     """
 
     kind: str
@@ -285,6 +286,7 @@ class ModelSource(NamedTuple):
     parse: str | None                  # 그 산출을 읽는 방식 이름 (alias 는 None)
     value_format: str
     how_to_check: str
+    failure_note: str                  # 조회 rc≠0 사유 앞에 붙는 고정 문구(없으면 빈 문자열)
 
 
 # 모델 원천 표 — 설정 키 레지스트리의 선택지·`pm-config delegate models`·`[m]` 안내가
@@ -293,15 +295,19 @@ MODEL_SOURCE: dict[str, ModelSource] = {
     # `claude --help` 실측: "Provide an alias for the latest model (e.g. 'fable', 'opus', or
     # 'sonnet') or a model's full name (e.g. 'claude-fable-5')."
     "claude": ModelSource("alias", ("fable", "opus", "sonnet"), None, None,
-                          "별칭 또는 풀네임", "`claude --help` 의 모델 옵션 설명"),
+                          "별칭 또는 풀네임", "`claude --help` 의 모델 옵션 설명", ""),
     # `codex debug models` 가 카탈로그를 JSON 으로 낸다(`{"models":[{"slug":…}]}`). 카탈로그는
     # 바이너리에 번들돼 있어 사실상 로컬 조회다 — 실측 0.34초(cold) · 0.02초(warm).
     "codex": ModelSource("live", (), ("codex", "debug", "models"), "json-slug",
-                         "카탈로그의 slug 또는 풀네임", "`codex debug models`"),
-    # `--verbose` 는 모델마다 머리 줄 `provider/id` 뒤에 모델 객체 JSON 을 낸다. 그 객체의
-    # `variants` 키가 그 모델이 받는 추론 강도다(1.18.5·1.18.34 같은 코드).
-    "opencode": ModelSource("live", (), ("opencode", "models", "--verbose"), "opencode-verbose",
-                            "provider/model", "`opencode models --verbose`"),
+                         "카탈로그의 slug 또는 풀네임", "`codex debug models`", ""),
+    # 2.x 서버 API 의 모델 목록. 모델마다 `providerID`·`id`·`variants`(추론 강도)·`limit` 을 JSON 으로 낸다.
+    # `--standalone` 은 이 조회 전용 서버를 띄웠다 닫는다. 없으면 상주 서비스를 띄워 남기고 그 뒤의
+    # `opencode run` 이 거기 붙는다(2.3.0 실측). 한 번에 약 1.3초.
+    "opencode": ModelSource("live", (), ("opencode", "api", "GET", "/api/model", "--standalone"),
+                            "opencode-api-model", "provider/model",
+                            "`opencode api GET /api/model --standalone`",
+                            # 1.x 는 이 명령에 도움말(로고)만 내고 rc 1 로 끝나 사유만으로는 원인이 보이지 않는다.
+                            " (opencode 2.x 가 있어야 합니다)"),
 }
 
 
@@ -329,12 +335,14 @@ def models_timeout() -> int:
 class ModelListing(NamedTuple):
     """모델 목록 조회 한 번의 결과.
 
-    `variants` 는 모델별 추론 강도를 내는 판독(`opencode-verbose`)만 채운다 — 모델 이름 →
-    variants 키(조회 산출 순서). 별칭 원천과 `json-slug` 판독은 `None` 이다(모델별 값이 없다).
+    `variants`·`limits` 는 모델별 값을 내는 판독(`opencode-api-model`)만 채운다 — 모델 이름 →
+    variants id(조회 산출 순서) · `limit` 객체(context·output, 있으면 input). 별칭 원천과 `json-slug`
+    판독은 `None` 이다(모델별 값이 없다).
     """
 
     models: tuple[str, ...]
     variants: dict[str, tuple[str, ...]] | None
+    limits: dict[str, dict] | None
 
 
 def _parse_json_slug(output: str) -> ModelListing:
@@ -352,43 +360,39 @@ def _parse_json_slug(output: str) -> ModelListing:
         if not isinstance(slug, str) or not slug.strip():
             raise HarnessContractError(f"slug 형식이 아닌 항목 {entry!r}")
         slugs.append(slug)
-    return ModelListing(tuple(slugs), None)
+    return ModelListing(tuple(slugs), None, None)
 
 
-def _parse_opencode_verbose(output: str) -> ModelListing:
-    """`opencode models --verbose` 산출 → 모델 목록과 모델별 variants.
+def _parse_opencode_api_model(output: str) -> ModelListing:
+    """`opencode api GET /api/model --standalone` 산출 → 모델 목록·모델별 variants·모델별 limit.
 
-    형식(실행 파일 판독): 모델마다 머리 줄 `provider/id` 뒤에 `JSON.stringify(모델, null, 2)`.
-    모델 객체는 늘 `variants` 객체를 갖는다(없는 모델은 `{}`). 머리 줄 순서와 variants 키 순서를
-    그대로 지킨다. 형식이 다르면 `HarnessContractError` 다(빈 목록으로 바꾸지 않는다).
+    형식(2.3.0 실측): `{"location": {...}, "data": [{"providerID", "id", "variants": [{"id", ...}],
+    "limit": {"context", "output"[, "input"]}, ...}]}`. 모델 이름은 `providerID/id`(`-m` 이 받는 표기)다.
+    응답 순서를 그대로 지킨다. 형식이 다르면 `HarnessContractError` 다(빈 목록으로 바꾸지 않는다).
     """
-    decoder = json.JSONDecoder()
+    try:
+        document = json.loads(output)
+    except ValueError as exc:
+        raise HarnessContractError(f"JSON 이 아니다 ({exc})") from exc
+    entries = document.get("data") if isinstance(document, dict) else None
+    if not isinstance(entries, list):
+        raise HarnessContractError("`data` 배열이 없다")
     models: list[str] = []
     variants: dict[str, tuple[str, ...]] = {}
-    position = 0
-    length = len(output)
-    while True:
-        while position < length and output[position].isspace():
-            position += 1
-        if position >= length:
-            break
-        line_end = output.find("\n", position)
-        header = output[position:line_end if line_end != -1 else length].strip()
-        if line_end == -1 or "/" not in header or header.startswith("{"):
-            raise HarnessContractError(f"모델 머리 줄 `provider/id` 가 아니다: {header[:80]!r}")
-        position = line_end + 1
-        while position < length and output[position].isspace():
-            position += 1
-        try:
-            model, position = decoder.raw_decode(output, position)
-        except json.JSONDecodeError as exc:
-            raise HarnessContractError(f"{header} 의 모델 객체가 JSON 이 아니다 ({exc})") from exc
-        named = model.get("variants") if isinstance(model, dict) else None
-        if not isinstance(named, dict):
-            raise HarnessContractError(f"{header} 의 모델 객체에 `variants` 객체가 없다")
-        models.append(header)
-        variants[header] = tuple(named)
-    return ModelListing(tuple(models), variants)
+    limits: dict[str, dict] = {}
+    for entry in entries:
+        fields = entry if isinstance(entry, dict) else {}
+        provider, model_id = fields.get("providerID"), fields.get("id")
+        named, limit = fields.get("variants"), fields.get("limit")
+        if (not isinstance(provider, str) or not provider or not isinstance(model_id, str) or not model_id
+                or not isinstance(named, list) or not isinstance(limit, dict)
+                or any(not isinstance(item, dict) or not isinstance(item.get("id"), str) for item in named)):
+            raise HarnessContractError(f"모델 항목 형식이 아니다: {str(entry)[:120]}")
+        name = f"{provider}/{model_id}"
+        models.append(name)
+        variants[name] = tuple(item["id"] for item in named)
+        limits[name] = dict(limit)
+    return ModelListing(tuple(models), variants, limits)
 
 
 def resolve_executable(name: str, env: dict[str, str] | None) -> str:
@@ -417,7 +421,7 @@ def resolve_executable(name: str, env: dict[str, str] | None) -> str:
 # 판독 이름 → 판독 함수. 키는 산출 형식 이름이다(하네스 표가 아니다 — `MODEL_SOURCE.parse` 가 고른다).
 _MODEL_LISTING_PARSERS = {
     "json-slug": _parse_json_slug,
-    "opencode-verbose": _parse_opencode_verbose,
+    "opencode-api-model": _parse_opencode_api_model,
 }
 
 # 조회 기억 — 한 프로세스 안에서 같은 조건의 조회를 다시 실행하지 않는다. 키는 (명령, cwd 절대경로,
@@ -434,7 +438,7 @@ def model_listing(source: ModelSource, *, cwd: Path | str, env: dict[str, str]) 
     모델 0개는 전부 `HarnessContractError` 다. 빈 목록이나 기본값으로 바꾸지 않는다.
     """
     if source.kind == "alias":
-        return ModelListing(tuple(source.values), None)
+        return ModelListing(tuple(source.values), None, None)
     if source.kind != "live":
         raise HarnessContractError(
             f"모르는 모델 원천 kind {source.kind!r} — MODEL_SOURCE 선언과 이 판정이 갈렸다.")
@@ -469,7 +473,7 @@ def model_listing(source: ModelSource, *, cwd: Path | str, env: dict[str, str]) 
         raise HarnessContractError(f"{shown} 출력 판독 실패 — UTF-8 이 아니다 ({exc})") from exc
     if result.returncode != 0:
         raise HarnessContractError(
-            f"{shown} 실패 rc={result.returncode}: {(result.stderr or '').strip()[:200]}")
+            f"{shown} 실패 rc={result.returncode}{source.failure_note}: {(result.stderr or '').strip()[:200]}")
     try:
         listing = parser(result.stdout or "")
     except HarnessContractError as exc:

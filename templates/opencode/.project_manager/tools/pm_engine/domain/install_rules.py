@@ -162,7 +162,7 @@ FREE_FORM_TOKENS = (
 
 # opencode 어댑터 고유 harness 설정값 — operational/자유서술 어디에도 안 속하는 모델 ID.
 # `.opencode/agents/*.md` 의 `model:` 필드로 등장.
-# *아니라* `opencode models` 결정적 조회로 해소한다(resolve_opencode_model) — 따라서 fill
+# *아니라* opencode 모델 목록 결정적 조회로 해소한다(resolve_opencode_model) — 따라서 fill
 # 후보에서 분리됐다(중복·환각 제거). opencode 트리가 복사됐을 때만 해소 단계를 탄다.
 OPENCODE_MODEL_TOKEN = "{{OPENCODE_PRO_MODEL}}"
 

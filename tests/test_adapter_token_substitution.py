@@ -20,7 +20,7 @@
   (e) 판정이 **제외 사유 기반**으로 역전됐다 — 새 하니스의 새 형식(`.yaml`·`.jsonc`)은 자동 편입,
       엔진 소스(`tools/**`)·엔진 메타데이터(`engine.manifest`)·방법론 문서는 여전히 제외.
 
-기계 테스트 — 라이브 하니스/네트워크 0(`opencode models` 조회는 stub). codex CLI 미실행.
+기계 테스트 — 라이브 하니스/네트워크 0(opencode 모델 목록 조회는 stub). codex CLI 미실행.
 """
 from __future__ import annotations
 
@@ -72,7 +72,7 @@ def _load(name: str):
 @pytest.fixture(scope="module")
 def pm_import():
     mod = _load("pm_import")
-    # hermetic — 라이브 `opencode models` CLI 미호출(미설치 동치).
+    # hermetic — 라이브 opencode 모델 목록 조회 미호출(미설치 동치).
     return mod
 
 
@@ -125,7 +125,7 @@ def imported(pm_import, tmp_path_factory):
     from _manager_home import install_known_ctx_io
     with pytest.MonkeyPatch.context() as patch:
         install_known_ctx_io(patch)
-        # 실제 `opencode models` 를 띄우지 않는다. 띄우면 opencode 가 스위트가 격리한 전역 설정 폴더에
+        # 실제 opencode 모델 목록 조회를 띄우지 않는다. 띄우면 opencode 가 스위트가 격리한 전역 설정 폴더에
         # `opencode.jsonc` 를 만들어, 같은 작업자에서 뒤에 도는 격리 확인 시험이 실패한다.
         patch.setattr(import_fill, "_real_models_runner", lambda source=None: (False, []))
         for harness in HARNESS_ADAPTER_DIRS:

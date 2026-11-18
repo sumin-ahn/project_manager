@@ -7110,27 +7110,28 @@ def test_update_migrates_ctx_keys_then_applies(pm_update, tmp_path, monkeypatch)
 
 
 def test_update_applies_limits_to_global_opencode_models(pm_update, tmp_path, monkeypatch):
-    """opencode 전역 설정(`$XDG_CONFIG_HOME/opencode`)에만 적힌 모델도 프로젝트 파일에 `limit` 이 생긴다.
+    """opencode 전역 설정 폴더에만 적힌 모델도 프로젝트 파일에 `limit.input` 이 생긴다.
 
-    HOME 아래 `.config/opencode` 와 `OPENCODE_CONFIG_DIR` 의 설정은 대상이 아니다. 전역 파일은
+    전역 폴더는 opencode 2.x 와 같이 `OPENCODE_CONFIG_DIR` 이 있으면 그 폴더 하나다 — 그때
+    `$XDG_CONFIG_HOME/opencode` 와 HOME 아래 `.config/opencode` 의 설정은 대상이 아니다. 전역 파일은
     읽기만 하고, dry-run 은 프로젝트 파일을 바꾸지 않는다."""
     monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
     dest = tmp_path / "adopter"
     _import_adopter(dest, "opencode")
     xdg = tmp_path / "xdg"
     (xdg / "opencode").mkdir(parents=True)
-    global_file = xdg / "opencode" / "opencode.jsonc"
-    global_file.write_text(
-        '{\n  // 전역 로컬 모델\n  "provider": {"ollama": {"models": {"gemma-t": {"name": "g"}}}}\n}\n',
-        encoding="utf-8")
+    (xdg / "opencode" / "opencode.jsonc").write_text(
+        '{"provider": {"ollama": {"models": {"xdg-model": {}}}}}', encoding="utf-8")
     home = tmp_path / "home"
     (home / ".config" / "opencode").mkdir(parents=True)
     (home / ".config" / "opencode" / "opencode.jsonc").write_text(
         '{"provider": {"ollama": {"models": {"home-model": {}}}}}', encoding="utf-8")
     config_dir = tmp_path / "opencode-config-dir"
     config_dir.mkdir()
-    (config_dir / "opencode.jsonc").write_text(
-        '{"provider": {"ollama": {"models": {"config-dir-model": {}}}}}', encoding="utf-8")
+    global_file = config_dir / "opencode.jsonc"
+    global_file.write_text(
+        '{\n  // 전역 로컬 모델\n  "provider": {"ollama": {"models": {"gemma-t": {"name": "g"}}}}\n}\n',
+        encoding="utf-8")
     env = {"XDG_CONFIG_HOME": str(xdg), "HOME": str(home),
            "OPENCODE_CONFIG_DIR": str(config_dir)}
     project = dest / ".opencode" / "opencode.jsonc"
@@ -7140,14 +7141,14 @@ def test_update_applies_limits_to_global_opencode_models(pm_update, tmp_path, mo
     planned = _adopter_update(dest, "--dry-run", env=env)
     assert planned.returncode == 0, planned.stdout + planned.stderr
     assert project.read_bytes() == before, "dry-run 이 프로젝트 파일을 바꿨다"
-    assert "provider.ollama.models.gemma-t.limit.context (없음) → 200000" in planned.stdout
+    assert "provider.ollama.models.gemma-t.limit.input (없음) → 200000" in planned.stdout
 
     run = _adopter_update(dest, env=env)
     assert run.returncode == 0, run.stdout + run.stderr
     document = adapter_documents._load_adapter_config_document(project)
     models = document["provider"]["ollama"]["models"]
-    assert models["gemma-t"]["limit"] == {"context": 2000000, "input": 200000, "output": 32000}
-    assert "home-model" not in models and "config-dir-model" not in models
+    assert models["gemma-t"]["limit"] == {"input": 200000}
+    assert "home-model" not in models and "xdg-model" not in models
     assert global_file.read_bytes() == global_before, "opencode 전역 설정을 썼다"
 
 

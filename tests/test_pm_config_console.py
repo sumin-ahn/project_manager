@@ -908,7 +908,7 @@ def test_model_guidance_truncates_long_lists_and_points_at_the_query(pc, capsys,
     assert f"가용 모델 {total}개" in out
     assert models[config_models._DELEGATE_MODEL_LIST_LIMIT - 1] in out
     assert models[config_models._DELEGATE_MODEL_LIST_LIMIT] not in out
-    assert "opencode models" in out
+    assert "opencode api GET /api/model --standalone" in out
 
 
 @pytest.mark.parametrize("outcome", [(False, []), (True, [])])

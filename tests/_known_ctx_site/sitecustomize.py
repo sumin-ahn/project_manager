@@ -53,8 +53,8 @@ def fixture_reader(capacity=200000, context=1000000, model='fixture-model'):
                      'basis': {'context_window': context, 'max_context_window': None,
                                'model_context_window': None, 'percent': 100}}]
         return [{'id': target, 'provider': provider, 'C': capacity,
-                 'basis': {'context': context, 'output': output, 'source': 'fixture'}}
-                for (provider, target), output in models.items()]
+                 'basis': {'context': context, 'output': 32000, 'source': 'fixture'}}
+                for provider, target in models]
     return reader
 
 
