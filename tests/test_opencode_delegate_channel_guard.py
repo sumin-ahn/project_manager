@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from _opencode_plugin import FAKE_CONTEXT_JS
+
 
 REPO = Path(__file__).resolve().parents[1]
 OPEN_LIB = REPO / "templates" / "opencode" / ".opencode" / "lib"
@@ -186,15 +188,14 @@ def test_opencode_plugin_shape_defaults_and_no_javascript_role_truth():
     plugin = OPEN_PLUGIN.read_text(encoding="utf-8")
     core = OPEN_CORE.read_text(encoding="utf-8")
     git_target_repo = OPEN_GIT_TARGET_REPO.read_text(encoding="utf-8")
-    assert plugin.count("export const") == 1
-    assert "DelegateChannelPlugin" in plugin
-    assert 'toolName: "task"' in core
-    assert 'roleArgKey: "subagent_type"' in core
+    assert "export const" not in plugin
+    assert plugin.count("export default") == 1 and "export default core.DelegateChannelPlugin;" in plugin
+    assert 'toolName: "subagent"' in core
+    assert 'roleArgKey: "agent"' in core
     assert 'roleValuePrefix: ""' in core
     assert "enforceDeny: true" in core
-    assert "OpenCode 1.18.12" in core and "1.18.5" in core
-    assert 'worktree="/"' in core
-    assert "directory || worktree" in core
+    assert "OpenCode 2.3.0" in core
+    assert "const cwd = ctx.location.directory;" in core
     assert 'require("./warning-channel-core.cjs")' in core
     assert 'require("./warning-channel-core.cjs")' in git_target_repo
     for role in ROLES:
@@ -202,7 +203,7 @@ def test_opencode_plugin_shape_defaults_and_no_javascript_role_truth():
 
 
 def test_opencode_core_spawn_contract_deny_and_blocks_without_verdict():
-    script = r'''
+    script = FAKE_CONTEXT_JS + r'''
 const assert = require("node:assert");
 const m = require("./delegate-channel-core.cjs");
 const path = require("node:path");
@@ -256,7 +257,6 @@ for (const result of [
 }
 
 (async () => {
-  const toasts = [];
   const seenAgents = [];
   const judge = (_root, _cwd, agent) => {
     seenAgents.push(agent);
@@ -268,49 +268,32 @@ for (const result of [
       harness: "claude", model: "fixture",
     };
   };
-  const hooks = await m.makeDelegateChannelPlugin(judge)({
-    directory: "/repo",
-    client: {tui: {showToast: async (value) => toasts.push(value)}},
-  });
-  await hooks["tool.execute.before"](
-    {tool: "bash", sessionID: "ignored"},
-    {args: {subagent_type: "developer"}},
-  );
-  await hooks["tool.execute.before"](
-    {tool: "task", sessionID: "missing-role"},
-    {args: {}},
-  );
+  const plugin = m.makeDelegateChannelPlugin(judge);
+  assert.strictEqual(plugin.id, "pm.delegate-channel");
+  const hooks = await setupPlugin(plugin, {directory: "/repo"});
+  assert.deepStrictEqual(Object.keys(hooks.tool), ["execute.before"]);
+  assert.deepStrictEqual(Object.keys(hooks.session), ["context"]);
+  await hooks.tool["execute.before"](toolEvent("shell", "ignored", {agent: "developer"}));
+  await hooks.tool["execute.before"](toolEvent("subagent", "missing-role", {}));
   await assert.rejects(
-    hooks["tool.execute.before"](
-      {tool: "task", sessionID: "deny"},
-      {args: {subagent_type: "developer"}},
-    ),
+    hooks.tool["execute.before"](toolEvent("subagent", "deny", {agent: "developer", description: "d", prompt: "p"})),
     /delegate-channel\/deny/,
   );
   assert.deepStrictEqual(seenAgents, ["", "developer"]);
 
-  const failingHooks = await m.makeDelegateChannelPlugin(() => {
+  const failingHooks = await setupPlugin(m.makeDelegateChannelPlugin(() => {
     throw new Error("fixture boom");
-  })({
-    directory: "/repo",
-    client: {tui: {showToast: async (value) => toasts.push(value)}},
-  });
+  }), {directory: "/repo"});
   await assert.rejects(
-    failingHooks["tool.execute.before"](
-      {tool: "task", sessionID: "warn"},
-      {args: {subagent_type: "researcher"}},
-    ),
+    failingHooks.tool["execute.before"](toolEvent("subagent", "warn", {agent: "researcher"})),
     (error) => error.message.startsWith("[delegate-channel/판정 실패] 이 도구 호출의 판정을 얻지 못해 실행하지 않았다(fixture boom)."),
   );
-  const context = {system: []};
-  await failingHooks["experimental.chat.system.transform"](
-    {sessionID: "warn"}, context,
-  );
+  const context = contextEvent("warn");
+  await failingHooks.session.context(context);
   assert.strictEqual(context.system.length, 0);
-  assert.strictEqual(toasts.length, 0);
 
   let injectedAgent;
-  const injected = await m.makeDelegateChannelPlugin(
+  const injected = await setupPlugin(m.makeDelegateChannelPlugin(
     (_root, _cwd, agent) => {
       injectedAgent = agent;
       return {
@@ -324,17 +307,12 @@ for (const result of [
       roleValuePrefix: "prefix:",
       enforceDeny: false,
     },
-  )({directory: "/repo", client: {tui: {showToast: async () => {}}}});
-  await injected["tool.execute.before"](
-    {tool: "measured-task", sessionID: "advisory"},
-    {args: {measured_agent: "prefix:developer"}},
-  );
+  ), {directory: "/repo"});
+  await injected.tool["execute.before"](toolEvent("measured-task", "advisory", {measured_agent: "prefix:developer"}));
   assert.strictEqual(injectedAgent, "developer");
-  const advisoryContext = {system: []};
-  await injected["experimental.chat.system.transform"](
-    {sessionID: "advisory"}, advisoryContext,
-  );
-  assert.match(advisoryContext.system[0], /advisory 로 수준 낮춤/);
+  const advisoryContext = contextEvent("advisory");
+  await injected.session.context(advisoryContext);
+  assert.match(systemTexts(advisoryContext)[0], /advisory 로 수준 낮춤/);
   console.log("DELEGATE_CHANNEL_CORE_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 '''
@@ -349,32 +327,22 @@ for (const result of [
     assert "DELEGATE_CHANNEL_CORE_OK" in result.stdout
 
 
-def test_opencode_non_delegation_agent_record_does_not_toast_or_inject_context(tmp_path):
+def test_opencode_non_delegation_agent_record_does_not_inject_context(tmp_path):
     """Unknown built-ins such as general are recorded by Python without alert fatigue."""
     judgment = delegate_channel._decide_agent_input(pm_paths.home_at(tmp_path), "general", "opencode")
     assert judgment["verdict"] == "allow"
     assert "delegate-channel/record" in judgment["reason"]
     assert "delegate-channel/warn" not in judgment["reason"]
 
-    script = r'''
+    script = FAKE_CONTEXT_JS + r'''
 const assert = require("node:assert");
 const m = require("./delegate-channel-core.cjs");
 const judgment = JSON.parse(process.env.QUIET_JUDGMENT);
 (async () => {
-  const toasts = [];
-  const hooks = await m.makeDelegateChannelPlugin(() => judgment)({
-    directory: "/repo",
-    client: {tui: {showToast: async (value) => toasts.push(value)}},
-  });
-  await hooks["tool.execute.before"](
-    {tool: "task", sessionID: "general-session"},
-    {args: {subagent_type: "general"}},
-  );
-  const context = {system: []};
-  await hooks["experimental.chat.system.transform"](
-    {sessionID: "general-session"}, context,
-  );
-  assert.deepStrictEqual(toasts, []);
+  const hooks = await setupPlugin(m.makeDelegateChannelPlugin(() => judgment), {directory: "/repo"});
+  await hooks.tool["execute.before"](toolEvent("subagent", "general-session", {agent: "general"}));
+  const context = contextEvent("general-session");
+  await hooks.session.context(context);
   assert.deepStrictEqual(context.system, []);
   console.log("QUIET_GENERAL_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
@@ -589,15 +557,14 @@ console.log(`REAL_PYTHON_PARITY_OK:${cases.length}`);
     assert f"REAL_PYTHON_PARITY_OK:{len(cases)}" in result.stdout
 
 
-def test_opencode_delegate_channel_cwd_source_prefers_directory_over_root_worktree(tmp_path):
-    """판정 대상 cwd 출처는 `directory || worktree || process.cwd()` 순 그대로다.
+def test_opencode_delegate_channel_cwd_source_is_the_session_directory(tmp_path):
+    """판정 대상 cwd 출처는 플러그인 컨텍스트의 세션 폴더(`ctx.location.directory`)다.
 
-    라이브 1.18.12/1.18.5 프로브에서 worktree="/" 가 관측됐고 1.18.25 바이너리도 worktree!=="/"
-    를 특례로 갖는다 — worktree 를 앞세우면 판정이 "/" 를 받는다. 엔진 루트를 자기 위치에서
-    받도록 바꾼 뒤에도 이 출처는 payload 그대로여야 한다.
+    opencode 2.x 상주 서비스는 플러그인 프로세스 폴더가 세션 폴더가 아니다(실측 2.3.0: $HOME) — 프로세스
+    폴더를 쓰면 판정이 다른 폴더를 받는다. 엔진 루트는 자기 설치 위치에서 받는다.
     """
     lib = _install_core(tmp_path / "install", with_engine=True)
-    script = r"""
+    script = FAKE_CONTEXT_JS + r"""
 const assert = require("node:assert");
 const m = require("./delegate-channel-core.cjs");
 (async () => {
@@ -609,15 +576,8 @@ const m = require("./delegate-channel-core.cjs");
       harness: "opencode", model: "fixture",
     };
   };
-  const hooks = await m.makeDelegateChannelPlugin(judge)({
-    directory: "/repo",
-    worktree: "/",
-    client: {tui: {showToast: async () => {}}},
-  });
-  await hooks["tool.execute.before"](
-    {tool: "task", sessionID: "cwd-source"},
-    {args: {subagent_type: "prober"}},
-  );
+  const hooks = await setupPlugin(m.makeDelegateChannelPlugin(judge), {directory: "/repo"});
+  await hooks.tool["execute.before"](toolEvent("subagent", "cwd-source", {agent: "prober"}));
   assert.deepStrictEqual(seen, ["/repo"]);
   console.log("DELEGATE_CWD_SOURCE_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
@@ -640,15 +600,15 @@ NO_VERDICT_TAIL = (
 
 
 def test_opencode_delegate_no_verdict_blocks_task_call(tmp_path):
-    """위임 채널이 판정을 얻지 못한 task 호출은 실행되지 않고 [delegate-channel/판정 실패] 로 막힌다.
+    """위임 채널이 판정을 얻지 못한 subagent 호출은 실행되지 않고 [delegate-channel/판정 실패] 로 막힌다.
 
     후보 실행기 소진·판정 프로세스 rc≠0·판정 함수 예외·판정 형식 오류와, 판정 엔진 파일이 없는 설치를 돈다.
-    어느 꼴도 경고 채널·toast 를 쓰지 않는다(경고 후 통과 없음)."""
+    어느 꼴도 경고 채널을 쓰지 않는다(경고 후 통과 없음)."""
     install = tmp_path / "install"
     _install_core(install, with_engine=False)
     (install / ".project_manager").mkdir()
     (install / ".project_manager" / "local.conf").write_text(f"runtime.py={sys.executable}\n", encoding="utf-8")
-    script = r'''
+    script = FAKE_CONTEXT_JS + r'''
 const assert = require("node:assert");
 const path = require("node:path");
 const m = require("./delegate-channel-core.cjs");
@@ -675,17 +635,15 @@ const cases = [
     && msg.endsWith(TAIL)],
 ];
 (async () => {
-  for (const [factory, check] of cases) {
-    const toasts = [];
-    const hooks = await factory({directory: "/repo", client: {tui: {showToast: async (value) => toasts.push(value)}}});
+  for (const [plugin, check] of cases) {
+    const hooks = await setupPlugin(plugin, {directory: "/repo"});
     await assert.rejects(
-      hooks["tool.execute.before"]({tool: "task", sessionID: "S"}, {args: {subagent_type: "developer"}}),
+      hooks.tool["execute.before"](toolEvent("subagent", "S", {agent: "developer"})),
       (error) => { assert.ok(check(error.message), error.message); return true; },
     );
-    const context = {system: []};
-    await hooks["experimental.chat.system.transform"]({sessionID: "S"}, context);
+    const context = contextEvent("S");
+    await hooks.session.context(context);
     assert.deepStrictEqual(context.system, []);
-    assert.deepStrictEqual(toasts, []);
   }
   console.log("DELEGATE_NO_VERDICT_BLOCK_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
@@ -699,7 +657,7 @@ const cases = [
 
 
 def test_opencode_delegate_rerun_after_no_verdict_applies_verdict(tmp_path):
-    """판정 실패로 막힌 task 호출을 다시 실행해 판정을 얻으면 그 판정대로 처리된다(실제 엔진 CLI).
+    """판정 실패로 막힌 subagent 호출을 다시 실행해 판정을 얻으면 그 판정대로 처리된다(실제 엔진 CLI).
 
     위임이 꺼진 홈에서 첫 실행은 하한 검사 시작 실패로 막히고, 다시 실행하면 엔진의 위임 꺼짐 거부를 받는다.
     역할 매핑 불일치가 아닌 엔진 경고 판정(카드 미렌더 등)은 지금처럼 경고 채널에 실린다."""
@@ -707,7 +665,7 @@ def test_opencode_delegate_rerun_after_no_verdict_applies_verdict(tmp_path):
     shutil.copytree(REPO / ".project_manager" / "tools", engine_root / ".project_manager" / "tools")
     (engine_root / ".project_manager" / "local.conf").write_text(
         f"runtime.py={sys.executable}\ndelegate.enabled=false\n", encoding="utf-8")
-    script = r'''
+    script = FAKE_CONTEXT_JS + r'''
 const assert = require("node:assert");
 const childProcess = require("node:child_process");
 const m = require("./delegate-channel-core.cjs");
@@ -720,18 +678,19 @@ const flaky = (command, argv, options) => {
 };
 const judge = (_root, cwd, agent, tier) => m.judgeDelegation(root, cwd, agent, tier, flaky);
 (async () => {
-  const toasts = [];
-  const hooks = await m.makeDelegateChannelPlugin(judge)({directory: root, client: {tui: {showToast: async (v) => toasts.push(v)}}});
-  const call = () => hooks["tool.execute.before"]({tool: "task", sessionID: "S"}, {args: {subagent_type: "developer"}});
+  const hooks = await setupPlugin(m.makeDelegateChannelPlugin(judge), {directory: root});
+  const call = () => hooks.tool["execute.before"](toolEvent("subagent", "S", {agent: "developer"}));
   await assert.rejects(call(), /^Error: \[delegate-channel\/판정 실패\] 이 도구 호출의 판정을 얻지 못해 실행하지 않았다\(Python 판정 후보 소진/);
   await assert.rejects(call(), /^Error: \[delegate-channel\/deny\] 위임이 꺼져 있습니다/);
-  assert.deepStrictEqual(toasts, []);
-  const warned = await m.makeDelegateChannelPlugin(() => ({verdict: "allow", reason: "[delegate-channel/warn] engine fixture", harness: "", model: ""}))(
-    {directory: root, client: {tui: {showToast: async (v) => toasts.push(v)}}});
-  await warned["tool.execute.before"]({tool: "task", sessionID: "W"}, {args: {subagent_type: "developer"}});
-  const context = {system: []};
-  await warned["experimental.chat.system.transform"]({sessionID: "W"}, context);
-  assert.deepStrictEqual(context.system, ["[delegate-channel/warn] engine fixture"]);
+  const quiet = contextEvent("S");
+  await hooks.session.context(quiet);
+  assert.deepStrictEqual(quiet.system, []);
+  const warned = await setupPlugin(m.makeDelegateChannelPlugin(
+    () => ({verdict: "allow", reason: "[delegate-channel/warn] engine fixture", harness: "", model: ""})), {directory: root});
+  await warned.tool["execute.before"](toolEvent("subagent", "W", {agent: "developer"}));
+  const context = contextEvent("W");
+  await warned.session.context(context);
+  assert.deepStrictEqual(systemTexts(context), ["[delegate-channel/warn] engine fixture"]);
   console.log("DELEGATE_RERUN_VERDICT_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 '''
@@ -743,29 +702,27 @@ const judge = (_root, cwd, agent, tier) => m.judgeDelegation(root, cwd, agent, t
     assert "DELEGATE_RERUN_VERDICT_OK" in result.stdout
 
 
-def test_opencode_partial_mapping_task_call_is_denied_by_the_real_engine(tmp_path):
-    """역할 매핑이 일부만 있는 설정에서 task 호출은 실제 엔진 판정으로 거부된다(전에는 경고 후 통과).
+def test_opencode_partial_mapping_subagent_call_is_denied_by_the_real_engine(tmp_path):
+    """역할 매핑이 일부만 있는 설정에서 subagent 호출은 실제 엔진 판정으로 거부된다(전에는 경고 후 통과).
 
-    거부 사유는 엔진 오류 문구 그대로이고 경고 채널(toast·시스템 문맥)에는 아무것도 싣지 않는다."""
+    거부 사유는 엔진 오류 문구 그대로이고 경고 채널(시스템 문구)에는 아무것도 싣지 않는다."""
     engine_root = tmp_path / "adopter"
     shutil.copytree(REPO / ".project_manager" / "tools", engine_root / ".project_manager" / "tools")
     (engine_root / ".project_manager" / "local.conf").write_text(
         f"runtime.py={sys.executable}\ndelegate.developer.harness=opencode\n", encoding="utf-8")
-    script = r'''
+    script = FAKE_CONTEXT_JS + r'''
 const assert = require("node:assert");
 const m = require("./delegate-channel-core.cjs");
 const root = process.argv[1];
 const judge = (_root, cwd, agent, tier) => m.judgeDelegation(root, cwd, agent, tier);
 (async () => {
-  const toasts = [];
-  const hooks = await m.makeDelegateChannelPlugin(judge)({directory: root, client: {tui: {showToast: async (v) => toasts.push(v)}}});
+  const hooks = await setupPlugin(m.makeDelegateChannelPlugin(judge), {directory: root});
   await assert.rejects(
-    hooks["tool.execute.before"]({tool: "task", sessionID: "S"}, {args: {subagent_type: "developer"}}),
+    hooks.tool["execute.before"](toolEvent("subagent", "S", {agent: "developer"})),
     (error) => error.message === "[delegate-channel/deny] 위임 설정 오류: 역할 매핑 미설정(delegate.developer.harness/.model) — 말없는 대체 동작 금지. local.conf 에 delegate.<role>.harness/.model 을 설정하라.",
   );
-  const context = {system: []};
-  await hooks["experimental.chat.system.transform"]({sessionID: "S"}, context);
-  assert.deepStrictEqual(toasts, []);
+  const context = contextEvent("S");
+  await hooks.session.context(context);
   assert.deepStrictEqual(context.system, []);
   console.log("PARTIAL_MAPPING_DENIED_OK");
 })().catch((error) => { console.error(error); process.exit(1); });

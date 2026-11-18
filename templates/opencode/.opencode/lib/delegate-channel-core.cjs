@@ -1,4 +1,4 @@
-// OpenCode native task delegation-channel guard.
+// OpenCode subagent delegation-channel guard.
 // Python delegate_channel_guard.py owns normalization, roles, configuration,
 // and decisions.  This module owns only the measured OpenCode hook surface and
 // subprocess/warning wiring.
@@ -15,14 +15,14 @@ const ENGINE_ROOT = path.resolve(__dirname, "..", "..");
 
 const MIN_PYTHON = Object.freeze([3, 11]);
 
-// Live probes on OpenCode 1.18.12 and the company baseline 1.18.5 measured the
-// same surface: input={tool:"task",sessionID,callID}, output={args}, and
-// args={description,prompt,subagent_type}.  subagent_type is the bare agent
-// literal (for example "prober", with no prefix), and throwing here blocks the
-// spawn (no tool.execute.after; the error reaches the model).
+// A live probe on OpenCode 2.3.0 measured the tool `execute.before` event
+// {tool:"subagent",sessionID,agent,messageID,id,input} with
+// input={agent,description,prompt}.  input.agent is the bare agent name with no
+// prefix, and throwing here blocks the spawn before the background child session
+// exists (the error reaches the model as the tool result).
 const DEFAULT_SURFACE = Object.freeze({
-  toolName: "task",
-  roleArgKey: "subagent_type",
+  toolName: "subagent",
+  roleArgKey: "agent",
   roleValuePrefix: "",
   enforceDeny: true,
 });
@@ -270,20 +270,18 @@ function makeDelegateChannelPlugin(
   surfaceOverrides = {},
 ) {
   const surface = resolveSurface(surfaceOverrides);
-  return async ({ client, directory, worktree }) => {
-    // Live 1.18.12/1.18.5 probes observed worktree="/" even when directory
-    // identified the actual scratch project, so directory must stay first.
-    const cwd = directory || worktree || process.cwd();
-    const root = ENGINE_ROOT;
-    const warnings = createWarningChannel(client);
+  return {
+    id: "pm.delegate-channel",
+    async setup(ctx) {
+      const cwd = ctx.location.directory;
+      const root = ENGINE_ROOT;
+      const warnings = createWarningChannel();
 
-    return {
-      "tool.execute.before": async (input, output) => {
-        const tool = String((input && input.tool) || "").toLowerCase();
+      await ctx.tool.hook("execute.before", async (event) => {
+        const tool = String(event.tool || "").toLowerCase();
         if (tool !== String(surface.toolName).toLowerCase()) return;
-        const args = output && output.args;
-        const agentName = agentNameFromArgs(args, surface);
-        const sessionID = (input && input.sessionID) || "__global__";
+        const agentName = agentNameFromArgs(event.input, surface);
+        const sessionID = event.sessionID || "__global__";
 
         let judgment;
         try {
@@ -306,13 +304,11 @@ function makeDelegateChannelPlugin(
           const text = judgment.verdict === "deny"
             ? `[delegate-channel/warn] advisory 로 수준 낮춤: ${judgment.reason}`
             : judgment.reason;
-          await warnings.publish(sessionID, text);
+          warnings.publish(sessionID, text);
         }
-      },
-      "experimental.chat.system.transform": async (input, output) => {
-        warnings.inject(input, output);
-      },
-    };
+      });
+      await ctx.session.hook("context", (event) => warnings.inject(event));
+    },
   };
 }
 

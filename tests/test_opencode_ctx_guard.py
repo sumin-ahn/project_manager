@@ -1,23 +1,22 @@
 """opencode 어댑터 ctx checkpoint plugin 일치 테스트 (T-0551·ADR-0081 Decision 1·3).
 
 opencode plugin(`.opencode/plugins/ctx-guard.js`)이 컨텍스트 토큰을 추적해 임계 도달 시
-checkpoint 기록을 안내하고, `session.compacted`를 병행 관측해 count·re-arm·압축 후 안내를
+checkpoint 기록을 안내하고, `session.compaction.ended`를 병행 관측해 count·re-arm·압축 후 안내를
 수행하며, await 중 re-arm된 새 사이클을 구 메시지가 덮지 않는 것을 여러 층위에서 단언한다:
 
   1. config 일치  — opencode.jsonc 가 `compaction.auto:false`를 재도입하지 않고, 모델 limit 의
        output < context 제약을 만족한다.
-  2. plugin 일치  — event 토큰추적·session.compacted 병행 신호·차단/marker 제거·checkpoint 문구.
+  2. plugin 일치  — event 토큰추적·session.compaction.ended 병행 신호·차단/marker 제거·checkpoint 문구.
   3. node 동작    — 구간 판정, 세션별 관측 count·re-arm·안내, cycle epoch 경합 방지.
   4. 라이브 로드 — (T-0283·release-tier·`PM_OPENCODE_LIVE=1`+opencode 바이너리) 실 opencode 헤드리스가
        플러그인을 autoload 성공(로드 실패 로그 부재 + factory 실행 마커)하는지 실측. 기본 skip(CI green 불변).
 
-로드 규약(실측 T-0283·opencode 1.17.18): `.opencode/plugins/` 안 각 파일의 export 를 순회해 *모두 함수*
-이길 요구·각각을 팩토리로 호출한다 — CJS `module.exports`(객체/단일함수)는 거부되고 비함수 export(상수)
-하나로도 로드 실패. 그래서 진입점 `plugins/ctx-guard.js` 는 ESM 으로 팩토리 하나만 export 하는 얇은 shim
-이고, 순수 헬퍼·상수·팩토리 본체는 plugins/ *바깥* CJS 모듈 `lib/ctx-guard-core.cjs`(opencode 미스캔·node
-require 대상)에 둔다. 정적/순수 검증은 그 core 를, autoload 규약은 라이브 로드 검사가 본다.
+적재 규약(실측 opencode 2.3.0): `.opencode/plugins/` 의 각 파일은 플러그인 정의({ id, setup }) 하나를
+default export 한다. 그래서 진입점 `plugins/ctx-guard.js` 는 core 의 정의를 내보내는 얇은 ESM 파일이고,
+순수 헬퍼·상수·처리기 본체는 plugins/ *바깥* CJS 모듈 `lib/ctx-guard-core.cjs`(opencode 미스캔·node
+require 대상)에 둔다. 정적/순수 검증은 그 core 를, 적재 규약은 라이브 로드 검사가 본다.
 
-JS 로직의 SDK wiring 은 mock client 로 결정적으로 검증한다.
+처리기의 세션 조회·훅 연결은 플러그인 컨텍스트 대역(`tests/_opencode_plugin.py`)으로 결정적으로 검증한다.
 """
 from __future__ import annotations
 
@@ -32,6 +31,7 @@ from pathlib import Path
 import pytest
 
 from _opencode_model import SHIPPED_MODEL, SHIPPED_MODEL_ID
+from _opencode_plugin import FAKE_CONTEXT_JS
 
 REPO = Path(__file__).resolve().parents[1]
 OPENCODE = REPO / "templates" / "opencode" / ".opencode"
@@ -142,10 +142,9 @@ def test_t007_fixture_payload_bytes_and_marker_consumption(tmp_path):
         script = r'''
 const m = require("./ctx-guard-core.cjs");
 (async () => {
-  const hooks = await m.CtxGuardPlugin({directory:process.argv[1],
-    client:{session:{get:async ({path:{id}}) => ({data:{id}})}}});
+  const hooks = await m.createCtxGuard({location:{directory:process.argv[1]}, session:{get:async ({sessionID:id}) => ({id})}});
   const output = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID:process.argv[2]}, output);
+  await deliverTo(hooks, process.argv[2], output);
   process.stdout.write(JSON.stringify(output.system));
 })().catch((err) => {console.error(err); process.exitCode=1;});
 '''
@@ -288,21 +287,22 @@ def _snapshot_receipt(root: Path, session_id: str, generation: str) -> Path:
 
 # ── 1. config 일치: 기본 compaction + 모델 limit 제약 ───────────────────────
 
-def test_accumulate_tokens_prefers_total_with_sum_fallback():
-    """plugin 판정도 driver 파서와 동일하게 total 우선 + 합산 대체 (T-0557 통일)."""
+def test_accumulate_tokens_sums_the_step_token_parts():
+    """단계 끝 토큰(opencode 2.3.0 `session.step.ended` 의 tokens)은 total 이 없다 — 입력·출력·추론·캐시 합이다.
+    total 이 섞여 와도 따로 고르지 않는다."""
     script = (
         "const m = require(\"./ctx-guard-core.cjs\");"
         "const a = m.accumulateTokens({total: 500, input: 1, output: 1});"
         "const b = m.accumulateTokens({input: 2, output: 3, reasoning: 0,"
         " cache: {read: 4, write: 5}});"
-        "if (a !== 500 || b !== 14) throw new Error(`a=${a} b=${b}`);"
-        "console.log(['TOTAL','FIRST','GREEN'].join('_'));"
+        "if (a !== 2 || b !== 14) throw new Error(`a=${a} b=${b}`);"
+        "console.log(['PARTS','SUM','GREEN'].join('_'));"
     )
     if _NODE is None:
         pytest.skip("node 없음")
     out = _run_node_check(script)
     # 성공 마커는 소스에 리터럴로 없다(join 조립) — 실패 시 stderr 의 소스 echo 로 위양성 불가.
-    assert "TOTAL_FIRST_GREEN" in out
+    assert "PARTS_SUM_GREEN" in out
 
 
 def test_config_exists_and_parses():
@@ -315,7 +315,7 @@ def test_config_exists_and_parses():
 def test_config_does_not_disable_auto_compaction():
     """전역 자동 컴팩션은 기본값(켜짐)을 유지한다 — 전역 off 재유입 차단.
 
-    컴팩션을 전역으로 끄면 native task 자식 세션의 ctx-guard 면제와 겹쳐 checkpoint 안내도
+    컴팩션을 전역으로 끄면 subagent 자식 세션의 ctx-guard 면제와 겹쳐 checkpoint 안내도
     native compaction도 없는 상태가 된다 — 위임 서브에이전트가 컨텍스트 초과로 죽는 클래스.
     PM 메인 세션은 사전 checkpoint 안내와 native compaction 사후 안내를 함께 사용한다.
     (jsonc 주석은 파서가 제거하므로 주석 안 문자열은 이 가드를 통과시키지 못한다.)
@@ -375,14 +375,10 @@ def test_plugin_file_exists():
     assert CORE_FILE.exists(), f"ctx-guard core 모듈 없음: {CORE_FILE}"
 
 
-def test_plugin_entry_is_esm_single_function_export():
-    """opencode 로드 규약(실측 T-0283): 진입점은 ESM 으로 팩토리 하나만 export 하는 shim 이다.
-
-    opencode 는 plugins/ 각 파일의 export 를 순회해 *모두 함수*이길 요구하고 각각을 팩토리로
-    호출한다 — CJS `module.exports`(객체·단일함수 불문)는 거부('Plugin export is not a function')
-    되고 비함수 export(상수)·헬퍼 함수까지 플러그인으로 오인한다. 이 회귀(T-0283 원 버그)를 막는
-    durable 정적 가드: 진입점이 (1) CJS module.exports 를 쓰지 않고 (2) core 를 import 하며
-    (3) 정확히 하나의 export 문(팩토리 CtxGuardPlugin)만 갖는다. (실 autoload 는 라이브 검사가 봄.)
+def test_plugin_entry_is_esm_default_plugin_definition():
+    """opencode 2.x 적재 규약(실측 2.3.0): 진입점은 ESM 으로 플러그인 정의({ id, setup }) 하나를 default
+    export 한다. 정적 확인: (1) CJS module.exports 없음 (2) core 를 import (3) export 문은 default 하나
+    (CtxGuardPlugin). 실제 적재는 라이브 검사가 본다.
     """
     shim = _shim_src()
     # 주석(//...) 줄을 제외한 실 코드만 검사 (설명 주석에 규약 언급이 있어 오탐 방지).
@@ -395,16 +391,12 @@ def test_plugin_entry_is_esm_single_function_export():
     assert re.search(r'import\s+core\s+from\s+["\']\.\./lib/ctx-guard-core\.cjs["\']', shim), (
         "진입점이 ../lib/ctx-guard-core.cjs 를 import 하지 않음"
     )
-    # (3) export 문은 딱 하나(팩토리) — 상수/헬퍼를 함께 export 하면 opencode 가 오인/로드 실패.
-    #     주석(//...)은 제외하고 실 export 문장만 센다(줄 첫 토큰이 export).
+    # (3) export 문은 default 하나 — 주석(//...)은 제외하고 실 export 문장만 센다(줄 첫 토큰이 export).
     export_lines = [
         ln for ln in shim.splitlines() if re.match(r"\s*export\s", ln)
     ]
-    assert len(export_lines) == 1, (
-        f"진입점 export 문이 정확히 1개가 아님(팩토리 하나만이어야·상수/헬퍼 export 금지): {export_lines}"
-    )
-    assert "CtxGuardPlugin" in export_lines[0], (
-        f"진입점의 단일 export 가 CtxGuardPlugin 팩토리가 아님: {export_lines[0]!r}"
+    assert export_lines == ["export default core.CtxGuardPlugin;"], (
+        f"진입점 export 가 플러그인 정의 default 하나가 아님: {export_lines}"
     )
 
 
@@ -420,12 +412,13 @@ def test_ctx_guard_shim_and_core_co_present_in_source_tree():
     assert CORE_FILE.exists(), f"core 모듈 없음: {CORE_FILE}"
 
 
-def test_plugin_subscribes_message_events():
-    """event 훅으로 message.updated 를 구독해 토큰을 추적한다."""
+def test_plugin_subscribes_step_and_compaction_events():
+    """버스 구독은 단계 시작(모델)·단계 끝(토큰)·압축 끝 세 종류다(실측 opencode 2.3.0)."""
     src = _plugin_src()
-    assert "event:" in src or "event :" in src, "event 훅 없음 — 토큰추적 불가"
-    assert "message.updated" in src, "message.updated 이벤트 구독 없음"
-    assert "tokens" in src, "tokens 참조 없음 — ctx% 산출 불가"
+    assert ('const CTX_EVENT_TYPES = Object.freeze(["session.step.started", "session.step.ended", '
+            '"session.compaction.ended"]);') in src
+    assert "ctx.event.subscribe({ types: CTX_EVENT_TYPES, signal: controller.signal })" in src
+    assert '"session.usage.updated"' not in src, "세션 누적 사용량은 컨텍스트 점유가 아니다"
 
 
 def test_plugin_removes_stop_consumers_and_allowlist():
@@ -433,8 +426,9 @@ def test_plugin_removes_stop_consumers_and_allowlist():
 
     일반 도구 before 는 판정 경계(`createToolBoundary`) 하나뿐이다 — ctx 구간으로 도구를 막는 분기는 없다."""
     src = _plugin_src()
-    assert src.count('"tool.execute.before"') == 1, "일반 도구 before 는 하나여야 한다"
-    assert '"tool.execute.before": boundary.before' in src, "일반 도구 before 가 판정 경계가 아니다"
+    assert src.count('ctx.tool.hook("execute.before"') == 1, "일반 도구 before 는 하나여야 한다"
+    assert 'await ctx.tool.hook("execute.before", guard.before);' in src
+    assert "return { before: boundary.before, event, context };" in src, "일반 도구 before 가 판정 경계가 아니다"
     for removed in (
         "fired.stop",
         "writeStopMarker",
@@ -450,9 +444,9 @@ def test_plugin_removes_stop_consumers_and_allowlist():
 
 
 def test_plugin_subscribes_compaction_events_with_local_observation_count():
-    """session.compacted는 세션-로컬 event count만 올리고 사후 복원은 하지 않는다."""
+    """session.compaction.ended 는 세션-로컬 event count만 올리고 사후 복원은 하지 않는다."""
     src = _plugin_src()
-    assert "session.compacted" in src, "session.compacted 이벤트 분기 없음"
+    assert 'if (value.type === "session.compaction.ended") return compacted(data.sessionID);' in src
     assert "compactionCount" in src, "세션별 compaction count 없음"
     assert re.search(r"compactionCount\s*\+=\s*1", src), "관측 이벤트 단순 증가 없음"
     for removed in (
@@ -467,7 +461,7 @@ def test_plugin_subscribes_compaction_events_with_local_observation_count():
         assert removed not in src, f"폐기된 compaction 복원 기계 잔존: {removed}"
     assert "buildCompactionSnapshot" in src, "압축 후 엔진 snapshot 호출 없음"
     assert '"snapshot"' in src and '"checkpoint"' in src
-    assert "notifyCompacted" in src, "압축 후 사람용 toast 없음"
+    assert "toast" not in src.lower(), "opencode 2.x 서버 플러그인에는 사람용 알림 창이 없다"
 
 
 # ── 2c. ctx 예산 (ADR-0041 · T-0943): 압축 한도 기록 · modelLimit 폐기 ─────────
@@ -502,7 +496,7 @@ def test_plugin_has_idempotency_guard():
 
 
 def test_plugin_exempts_native_subsessions_and_caches_lookup_outcomes(tmp_path):
-    """native task 자식은 구간·compaction·모델 주입 모두 면제하며 lookup 을 캐시한다."""
+    """subagent 자식은 구간·compaction·모델 주입 모두 면제하며 lookup 을 캐시한다."""
     if _NODE is None:
         import pytest
 
@@ -517,36 +511,32 @@ const projectRoot = __PROJECT_ROOT__;
 (async () => {
   const childID = "ses_child_cache";
   let childCalls = 0;
-  const childHooks = await m.CtxGuardPlugin({client:{session:{
+  const childHooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
     get: async (opts) => {
       childCalls++;
       // 최상위까지 부모를 따라 올라간다 — 자식 다음 부모(부모 없음) 순서로 한 번씩.
       const expected = childCalls === 1 ? childID : "ses_parent_cache";
-      assert.deepStrictEqual(opts, {path:{id:expected}}, "SDK session.get 호출 형식");
-      return {data:childCalls === 1 ? {id:childID, parentID:"ses_parent_cache"} : {id:"ses_parent_cache"}};
+      assert.deepStrictEqual(opts, {sessionID:expected}, "session.get 호출 형식");
+      return childCalls === 1 ? {id:childID, parentID:"ses_parent_cache"} : {id:"ses_parent_cache"};
     },
-  }}, directory:projectRoot});
-  const warn = {event:{type:"message.updated", properties:{info:{
-    sessionID:childID, role:"assistant", tokens:{input:145000}
-  }}}};
+  }});
+  const warn = {type:"session.step.ended", data:{sessionID:childID, tokens:{input:145000}}};
   await childHooks.event(warn);
-  await childHooks.event({event:{type:"session.compacted", properties:{sessionID:childID}}});
+  await childHooks.event({type:"session.compaction.ended", data:{sessionID:childID}});
   const childSystem = {system:[]};
-  await childHooks["experimental.chat.system.transform"]({sessionID:childID}, childSystem);
+  await deliverTo(childHooks, childID, childSystem);
   assert.deepStrictEqual(childSystem.system, [], "child injection must bypass");
   assert.strictEqual(childCalls, 2, "same session lookup must be cached (child + parent once)");
 
   const failureID = "ses_lookup_failure";
   let failureCalls = 0;
-  const failureHooks = await m.CtxGuardPlugin({client:{session:{get: async () => {
+  const failureHooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{get: async () => {
     failureCalls++;
     throw new Error("SDK unavailable");
-  }}}, directory:projectRoot});
-  await failureHooks.event({event:{type:"message.updated", properties:{info:{
-    sessionID:failureID, role:"assistant", tokens:{input:145000}
-  }}}});
+  }}});
+  await failureHooks.event({type:"session.step.ended", data:{sessionID:failureID, tokens:{input:145000}}});
   const failureSystem = {system:[]};
-  await failureHooks["experimental.chat.system.transform"]({sessionID:failureID}, failureSystem);
+  await deliverTo(failureHooks, failureID, failureSystem);
   // SDK 불능은 main·child 어느 쪽으로도 추정하지 않는다 — 원인 경고만 남고 ctx 안내는 없다.
   assert.strictEqual(failureSystem.system.length, 1, "lookup failure must surface a warning");
   assert.ok(failureSystem.system[0].includes("[ctx-guard] 세션 확인 실패(SDK unavailable)"), failureSystem.system[0]);
@@ -555,18 +545,16 @@ const projectRoot = __PROJECT_ROOT__;
 
   const timeoutID = "ses_lookup_timeout";
   let timeoutCalls = 0;
-  const timeoutHooks = await m.CtxGuardPlugin({client:{session:{
+  const timeoutHooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
     get: async () => {
       timeoutCalls++;
       return new Promise(() => {});
     },
-  }}, directory:projectRoot});
+  }});
   const timeoutStarted = Date.now();
-  await timeoutHooks.event({event:{type:"message.updated", properties:{info:{
-    sessionID:timeoutID, role:"assistant", tokens:{input:145000}
-  }}}});
+  await timeoutHooks.event({type:"session.step.ended", data:{sessionID:timeoutID, tokens:{input:145000}}});
   const timeoutSystem = {system:[]};
-  await timeoutHooks["experimental.chat.system.transform"]({sessionID:timeoutID}, timeoutSystem);
+  await deliverTo(timeoutHooks, timeoutID, timeoutSystem);
   assert.ok(Date.now() - timeoutStarted < 4000, "never-resolving session.get did not time out");
   assert.strictEqual(timeoutSystem.system.length, 1, "lookup timeout must surface a warning");
   assert.ok(timeoutSystem.system[0].includes("조회 시간 초과"), timeoutSystem.system[0]);
@@ -592,61 +580,46 @@ const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 const projectRoot = __PROJECT_ROOT__;
 const sessionID = "ses_compaction_cycle";
-const warnEvent = () => ({
-  event: {type:"message.updated", properties:{info:{
-    sessionID, role:"assistant", tokens:{input:145000}
-  }}}
+const warnEvent = () => ({type:"session.step.ended", data:{sessionID, tokens:{input:145000}}
 });
 
 (async () => {
-  const toasts = [];
-  const hooks = await m.CtxGuardPlugin({client:{
-    session:{
-      get: async () => ({data:{id:sessionID}}),
-    },
-    tui:{showToast: async (toast) => { toasts.push(toast.body.message); }},
-  }, directory:projectRoot});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
+      get: async () => ({id:sessionID}),
+    }});
 
   // 일반 도구 before 는 판정 경계 하나뿐이다 — stop 구간으로 도구를 막지 않는다(아래 before 호출).
-  assert.deepStrictEqual(
-    Object.keys(hooks).sort(),
-    ["event", "experimental.chat.system.transform", "tool.execute.before"].sort(),
-    "stop deny/throw hooks must be absent",
-  );
-  await hooks.event({event:{type:"message.updated", properties:{info:{
-    sessionID, role:"assistant", tokens:{input:160000}
-  }}}});
+  assert.deepStrictEqual(Object.keys(hooks).sort(), ["before", "context", "event"], "stop deny/throw hooks must be absent");
+  await hooks.event({type:"session.step.ended", data:{sessionID, tokens:{input:160000}}});
   let output = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  await deliverTo(hooks, sessionID, output);
   assert.strictEqual(output.system.length, 1, "stop level must be absorbed by final warn guidance");
   assert.ok(output.system[0].includes("[ctx-warn/최종]"), "stop level did not use final guidance");
   assert.ok(output.system[0].includes("pm_log.py checkpoint"), "stop-level guidance lacks checkpoint");
-  await hooks["tool.execute.before"]({tool:"read", sessionID}, {args:{filePath:"README.md"}});
+  await hooks.before(toolEvent("read", sessionID, {path:"README.md"}));
 
   await hooks.event(warnEvent());
   output = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  await deliverTo(hooks, sessionID, output);
   assert.strictEqual(output.system.length, 1, "first-cycle warn missing");
   assert.ok(output.system[0].includes("pm_log.py checkpoint"), "warn is not checkpoint instruction");
 
   await hooks.event(warnEvent());
   output = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  await deliverTo(hooks, sessionID, output);
   assert.deepStrictEqual(output.system, [], "same-cycle warn fired twice");
 
-  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  await hooks.event({type:"session.compaction.ended", data:{sessionID}});
   output = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  await deliverTo(hooks, sessionID, output);
   assert.strictEqual(output.system.length, 1, "post-compaction snapshot missing");
   assert.ok(output.system[0].startsWith("## PM 정체성 (compaction 복구)"), "engine snapshot missing");
   assert.ok(!/compaction\s+\d+회/.test(output.system[0]), "display-only count must not be exposed");
   assert.ok(output.system[0].includes("- task: main"), "snapshot identity missing");
-  assert.ok(toasts.some((text) => text.includes("compaction 경계가 감지됐다")), "human toast missing");
-  assert.ok(toasts.every((text) => !/compaction\s+\d+회/.test(text)), "toast exposed count");
 
   await hooks.event(warnEvent());
   output = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  await deliverTo(hooks, sessionID, output);
   assert.strictEqual(output.system.length, 1, "warn was not re-armed after compaction");
   console.log("JS_COMPACTION_RESET_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
@@ -670,12 +643,12 @@ const projectRoot = __PROJECT_ROOT__;
 const sessionID = "ses_snapshot_null";
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{
-    get: async ({path:{id}}) => ({data:{id}}),
-  }}, directory:projectRoot});
-  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
+    get: async ({sessionID:id}) => ({id}),
+  }});
+  await hooks.event({type:"session.compaction.ended", data:{sessionID}});
   const output = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  await deliverTo(hooks, sessionID, output);
   assert.strictEqual(output.system.length, 1, "null snapshot erased model-facing notice");
   assert.ok(output.system[0].startsWith("[ctx-checkpoint] 압축 기록 실패: "), "snapshot failure reason missing");
   assert.ok(output.system[0].includes("[ctx-checkpoint] compaction 경계가 감지됐다"), "engine guidance missing");
@@ -687,7 +660,7 @@ const sessionID = "ses_snapshot_null";
 
 
 def test_plugin_compaction_stages_builder_payload_in_durable_marker(tmp_path):
-    """session.compacted는 builder stdout을 SID+generation marker로 원자 생성한다."""
+    """session.compaction.ended는 builder stdout을 SID+generation marker로 원자 생성한다."""
     if _NODE is None:
         import pytest
 
@@ -703,10 +676,10 @@ const projectRoot = __PROJECT_ROOT__;
 const sessionID = __SESSION_ID__;
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{
-    get: async ({path:{id}}) => ({data:{id}}),
-  }}, directory:projectRoot});
-  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
+    get: async ({sessionID:id}) => ({id}),
+  }});
+  await hooks.event({type:"session.compaction.ended", data:{sessionID}});
   console.log("JS_DURABLE_SNAPSHOT_STAGE_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
@@ -760,10 +733,10 @@ const outerDirectory = __OUTER__;
 const sessionID = __SESSION_ID__;
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{
-    get: async ({path:{id}}) => ({data:{id}}),
-  }}, directory:outerDirectory});
-  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const hooks = await m.createCtxGuard({location:{directory:outerDirectory}, session:{
+    get: async ({sessionID:id}) => ({id}),
+  }});
+  await hooks.event({type:"session.compaction.ended", data:{sessionID}});
   console.log("JS_ENGINE_ROOT_SELF_LOCATION_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__OUTER__", json.dumps(str(outer))).replace(
@@ -805,11 +778,11 @@ const projectRoot = __PROJECT_ROOT__;
 const sessionIDs = __SESSION_IDS__;
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{
-    get: async ({path:{id}}) => ({data:{id}}),
-  }}, directory:projectRoot});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
+    get: async ({sessionID:id}) => ({id}),
+  }});
   for (const sessionID of sessionIDs) {
-    await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+    await hooks.event({type:"session.compaction.ended", data:{sessionID}});
   }
   console.log("JS_DURABLE_SNAPSHOT_SID_PATH_SAFE_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
@@ -865,16 +838,16 @@ const builder = (value) =>
   `import sys\nif 'snapshot' in sys.argv:\n    sys.stdout.buffer.write(('${value}\\n').encode('utf-8'))\n`;
 
 (async () => {
-  const client = {session:{get: async ({path:{id}}) => ({data:{id}})}};
+  const client = {session:{get: async ({sessionID:id}) => ({id})}};
   fs.writeFileSync(engine, builder("snapshot-v1"), "utf8");
-  const firstProcess = await m.CtxGuardPlugin({client, directory:projectRoot});
-  await firstProcess.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const firstProcess = await m.createCtxGuard({location:{directory:projectRoot}, session:client.session});
+  await firstProcess.event({type:"session.compaction.ended", data:{sessionID}});
   const firstMarker = markerPaths()[0];
   assert.ok(firstMarker, "first process did not leave marker");
 
   fs.writeFileSync(engine, builder("snapshot-v2"), "utf8");
-  const secondProcess = await m.CtxGuardPlugin({client, directory:projectRoot});
-  await secondProcess.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const secondProcess = await m.createCtxGuard({location:{directory:projectRoot}, session:client.session});
+  await secondProcess.event({type:"session.compaction.ended", data:{sessionID}});
   const staged = markerPaths();
   assert.strictEqual(staged.length, 2, "independent generations did not coexist");
   const secondMarker = staged.find((marker) => marker !== firstMarker);
@@ -883,9 +856,9 @@ const builder = (value) =>
   fs.utimesSync(firstMarker, new Date(1000), new Date(1000));
   fs.utimesSync(secondMarker, new Date(2000), new Date(2000));
 
-  const restartedProcess = await m.CtxGuardPlugin({client, directory:projectRoot});
+  const restartedProcess = await m.createCtxGuard({location:{directory:projectRoot}, session:client.session});
   const firstOutput = {system:[]};
-  await restartedProcess["experimental.chat.system.transform"]({sessionID}, firstOutput);
+  await deliverTo(restartedProcess, sessionID, firstOutput);
   assert.strictEqual(firstOutput.system.length, 1, "restarted process did not inject marker");
   assert.strictEqual(firstOutput.system[0], "snapshot-v2\n", "restart did not choose newest marker");
   assert.deepStrictEqual(markerPaths(), [], "consumed and older generations remain");
@@ -896,7 +869,7 @@ const builder = (value) =>
   );
 
   const secondOutput = {system:[]};
-  await restartedProcess["experimental.chat.system.transform"]({sessionID}, secondOutput);
+  await deliverTo(restartedProcess, sessionID, secondOutput);
   assert.deepStrictEqual(secondOutput.system, [], "marker was injected more than once");
   console.log("JS_DURABLE_SNAPSHOT_RESTART_CONSUME_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
@@ -942,16 +915,16 @@ const builder = (value) =>
   `import sys\nif 'snapshot' in sys.argv:\n    sys.stdout.buffer.write(('${value}\\n').encode('utf-8'))\n`;
 
 (async () => {
-  const client = {session:{get: async ({path:{id}}) => ({data:{id}})}};
+  const client = {session:{get: async ({sessionID:id}) => ({id})}};
   fs.writeFileSync(engine, builder("process-a"), "utf8");
-  const processA = await m.CtxGuardPlugin({client, directory:projectRoot});
-  await processA.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const processA = await m.createCtxGuard({location:{directory:projectRoot}, session:client.session});
+  await processA.event({type:"session.compaction.ended", data:{sessionID}});
   const markerA = markerPaths()[0];
   const generationA = path.basename(markerA).slice(`compact-snapshot.${sessionID}.`.length);
 
   fs.writeFileSync(engine, builder("process-b"), "utf8");
-  const processB = await m.CtxGuardPlugin({client, directory:projectRoot});
-  await processB.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const processB = await m.createCtxGuard({location:{directory:projectRoot}, session:client.session});
+  await processB.event({type:"session.compaction.ended", data:{sessionID}});
   const staged = markerPaths();
   assert.strictEqual(staged.length, 2);
   const markerB = staged.find((marker) => marker !== markerA);
@@ -971,7 +944,7 @@ const builder = (value) =>
     return originalWriteFileSync(...args);
   };
   try {
-    await processA["experimental.chat.system.transform"]({sessionID}, output);
+    await deliverTo(processA, sessionID, output);
   } finally {
     fs.writeFileSync = originalWriteFileSync;
   }
@@ -1025,23 +998,21 @@ const receiptPaths = () => fs.readdirSync(markerDir)
   .map((name) => path.resolve(markerDir, name));
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{
-    get: async ({path:{id}}) => ({data:{id}}),
-  }}, directory:projectRoot});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
+    get: async ({sessionID:id}) => ({id}),
+  }});
 
   // compaction은 동일 payload를 memory 슬롯과 durable marker 양쪽에 적재한다.
-  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  await hooks.event({type:"session.compaction.ended", data:{sessionID}});
   const staged = markerPaths();
   assert.strictEqual(staged.length, 1, "compaction did not stage exactly one marker");
   assert.strictEqual(fs.readFileSync(staged[0], "utf8"), snapshotPayload);
 
   // warn2가 memory 슬롯을 덮을 때 snapshot marker 소유권을 놓아야 한다.
-  await hooks.event({event:{type:"message.updated", properties:{info:{
-    sessionID, role:"assistant", tokens:{input:155000}
-  }}}});
+  await hooks.event({type:"session.step.ended", data:{sessionID, tokens:{input:155000}}});
 
   const firstOutput = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, firstOutput);
+  await deliverTo(hooks, sessionID, firstOutput);
   assert.strictEqual(firstOutput.system.length, 1, "warn2 was not injected once");
   assert.ok(firstOutput.system[0].includes("[ctx-warn/강화]"), "wrong first payload");
   assert.deepStrictEqual(markerPaths(), staged, "warn2 transform deleted snapshot marker");
@@ -1049,13 +1020,13 @@ const receiptPaths = () => fs.readdirSync(markerDir)
   assert.deepStrictEqual(receiptPaths(), [], "ownership-released warn created snapshot receipt");
 
   const secondOutput = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, secondOutput);
+  await deliverTo(hooks, sessionID, secondOutput);
   assert.deepStrictEqual(secondOutput.system, [snapshotPayload], "marker fallback lost snapshot");
   assert.deepStrictEqual(markerPaths(), [], "marker remained after fallback consumption");
   assert.strictEqual(receiptPaths().length, 1, "fallback delivery did not create one receipt");
 
   const thirdOutput = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, thirdOutput);
+  await deliverTo(hooks, sessionID, thirdOutput);
   assert.deepStrictEqual(thirdOutput.system, [], "snapshot was injected more than once");
   const delivered = [...firstOutput.system, ...secondOutput.system, ...thirdOutput.system];
   assert.strictEqual(
@@ -1100,16 +1071,16 @@ const builder = (value) =>
   `import sys\nif 'snapshot' in sys.argv:\n    sys.stdout.buffer.write(('${value}\\n').encode('utf-8'))\n`;
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{
-    get: async ({path:{id}}) => ({data:{id}}),
-  }}, directory:projectRoot});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
+    get: async ({sessionID:id}) => ({id}),
+  }});
   fs.writeFileSync(engine, builder("snapshot-v1"), "utf8");
-  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  await hooks.event({type:"session.compaction.ended", data:{sessionID}});
   const firstMarker = markerPaths()[0];
   assert.strictEqual(fs.readFileSync(firstMarker, "utf8"), "snapshot-v1\n");
 
   fs.writeFileSync(engine, builder("snapshot-v2"), "utf8");
-  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  await hooks.event({type:"session.compaction.ended", data:{sessionID}});
   const latest = markerPaths();
   assert.strictEqual(latest.length, 1, "owned old generation remains");
   assert.notStrictEqual(latest[0], firstMarker, "recompaction reused a generation");
@@ -1157,11 +1128,11 @@ const builder = (value) =>
   `import sys\nif 'snapshot' in sys.argv:\n    sys.stdout.buffer.write(('${value}\\n').encode('utf-8'))\n`;
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{
-    get: async ({path:{id}}) => ({data:{id}}),
-  }}, directory:projectRoot});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
+    get: async ({sessionID:id}) => ({id}),
+  }});
   fs.writeFileSync(engine, builder("snapshot-v1"), "utf8");
-  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  await hooks.event({type:"session.compaction.ended", data:{sessionID}});
   const firstMarker = markerPaths()[0];
   const firstGeneration = path.basename(firstMarker)
     .slice(`compact-snapshot.${sessionID}.`.length);
@@ -1182,7 +1153,7 @@ const builder = (value) =>
     return originalRenameSync(source, destination);
   };
   try {
-    await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+    await hooks.event({type:"session.compaction.ended", data:{sessionID}});
   } finally {
     fs.renameSync = originalRenameSync;
   }
@@ -1193,7 +1164,7 @@ const builder = (value) =>
   assert.deepStrictEqual(receiptPaths(), [], "non-delivery staging path created a receipt");
 
   const output = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  await deliverTo(hooks, sessionID, output);
   assert.deepStrictEqual(output.system, ["snapshot-v2\n"], "latest in-memory payload was not delivered");
   assert.deepStrictEqual(markerPaths(), [], "owned old marker was not consumed with memory delivery");
   assert.deepStrictEqual(
@@ -1271,14 +1242,14 @@ const afterSessionID = __AFTER_SESSION_ID__;
 const beforeLatestPayload = __BEFORE_LATEST_PAYLOAD__;
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{
-    get: async ({path:{id}}) => ({data:{id}}),
-  }}, directory:projectRoot});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
+    get: async ({sessionID:id}) => ({id}),
+  }});
   const beforeOutput = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID:beforeSessionID}, beforeOutput);
+  await deliverTo(hooks, beforeSessionID, beforeOutput);
   assert.deepStrictEqual(beforeOutput.system, [beforeLatestPayload], "pre-claim B missed latest");
   const afterOutput = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID:afterSessionID}, afterOutput);
+  await deliverTo(hooks, afterSessionID, afterOutput);
   assert.deepStrictEqual(afterOutput.system, [], "post-claim B injected a stale snapshot");
   console.log("JS_SNAPSHOT_LATE_ENTRY_GC_FIRST_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
@@ -1340,9 +1311,9 @@ const receiptPaths = () => fs.readdirSync(markerDir)
   .filter((name) => name.startsWith(`compact-snapshot-receipt.${sessionID}.`));
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{
-    get: async ({path:{id}}) => ({data:{id}}),
-  }}, directory:projectRoot});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
+    get: async ({sessionID:id}) => ({id}),
+  }});
   const originalUnlinkSync = fs.unlinkSync;
   let oldGcFailureObserved = false;
   fs.unlinkSync = (target) => {
@@ -1357,7 +1328,7 @@ const receiptPaths = () => fs.readdirSync(markerDir)
 
   const blockedOutput = {system:[]};
   try {
-    await hooks["experimental.chat.system.transform"]({sessionID}, blockedOutput);
+    await deliverTo(hooks, sessionID, blockedOutput);
   } finally {
     fs.unlinkSync = originalUnlinkSync;
   }
@@ -1372,10 +1343,10 @@ const receiptPaths = () => fs.readdirSync(markerDir)
   );
 
   const retryOutput = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, retryOutput);
+  await deliverTo(hooks, sessionID, retryOutput);
   assert.deepStrictEqual(retryOutput.system, [latestPayload], "retry did not deliver latest");
   const duplicateOutput = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, duplicateOutput);
+  await deliverTo(hooks, sessionID, duplicateOutput);
   assert.deepStrictEqual(duplicateOutput.system, [], "retry delivered latest more than once");
   console.log("JS_SNAPSHOT_OLD_GC_FAILURE_RETRY_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
@@ -1414,7 +1385,7 @@ def _snapshot_claim_fixture(tmp_path, payload="최신 원문\r\n둘째\r\n"):
 
 def _run_snapshot_claim_node(data, script, *, expected_rc=0):
     assert _NODE is not None, "Node가 있어야 실제 snapshot claim을 검증할 수 있다"
-    done = subprocess.run([_NODE, "-e", script, json.dumps(data)],
+    done = subprocess.run([_NODE, "-e", FAKE_CONTEXT_JS + script, json.dumps(data)],
                           cwd=Path(data["root"]) / ".opencode" / "lib",
                           capture_output=True, timeout=30)
     assert done.returncode == expected_rc, (done.stdout.decode("utf-8"), done.stderr.decode("utf-8"))
@@ -1470,9 +1441,9 @@ fs.writeFileSync = (target,...args) => {
   return native.write(target,...args);
 };
 (async () => {
-  const hooks = await m.CtxGuardPlugin({directory:d.root,client:{session:{get:async ({path:{id}})=>({data:{id}})}}});
+  const hooks = await m.createCtxGuard({location:{directory:d.root}, session:{get:async ({sessionID:id})=> ({id})}});
   const output={system:[]};
-  try {await hooks["experimental.chat.system.transform"]({sessionID:d.sid},output);}
+  try {await deliverTo(hooks, d.sid, output);}
   finally {fs.linkSync=native.link; fs.unlinkSync=native.unlink; fs.readFileSync=native.read; fs.writeFileSync=native.write;}
   assert.strictEqual(calls.link,d.scenario === "old_gc" ? 0 : 1);
   if (d.scenario !== "empty") assert.strictEqual(injected,true,"failure override was not reached");
@@ -1499,7 +1470,7 @@ fs.writeFileSync = (target,...args) => {
   }
   // persistent fence/removed source must not replay. Transient pre-claim failures may retry.
   const retry={system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID:d.sid},retry);
+  await deliverTo(hooks, d.sid, retry);
   const retryAllowed=["old_gc","link_ENOTSUP","link_EPERM","link_EXDEV"].includes(d.scenario);
   assert.deepStrictEqual(retry.system,retryAllowed ? [d.payload] : []);
   if (d.scenario === "source_EACCES" || d.scenario === "source_ENOENT" || d.scenario === "link_EEXIST") assert.ok(fs.existsSync(d.fence));
@@ -1532,7 +1503,7 @@ fs.linkSync=(source,dest)=>{
 fs.unlinkSync=(target)=>{const result=native.unlink(target);if(same(target,d.source)&&d.scenario==="post_source")crash();return result;};
 fs.readFileSync=(target,...args)=>{const result=native.read(target,...args);if(same(target,d.fence)&&d.scenario==="post_read")crash();return result;};
 (async()=>{
-  const hooks=await m.CtxGuardPlugin({directory:d.root,client:{session:{get:async({path:{id}})=>({data:{id,parentID:d.scenario==="child"?"parent":undefined}})}}});
+  const hooks=await m.createCtxGuard({location:{directory:d.root}, session:{get:async({sessionID:id})=> ({id,parentID:d.scenario==="child"?"parent":undefined})}});
   const other=path.join(path.dirname(d.source),"compact-snapshot.other-session.foreign");
   fs.writeFileSync(other,"other\r\n");
   const otherFence=path.join(path.dirname(other),"."+path.basename(other)+".claimed");
@@ -1542,15 +1513,15 @@ fs.readFileSync=(target,...args)=>{const result=native.read(target,...args);if(s
     // Existing pending memory owns only its staged generation, not another producer's generation.
     fs.unlinkSync=native.unlink;fs.linkSync=native.link;fs.readFileSync=native.read;
     fs.unlinkSync(d.old);fs.unlinkSync(d.source);
-    await hooks.event({event:{type:"session.compacted",properties:{sessionID:d.sid}}});
+    await hooks.event({type:"session.compaction.ended", data:{sessionID:d.sid}});
     const foreign=path.join(path.dirname(d.source),"compact-snapshot."+d.sid+".foreign-generation");
     fs.writeFileSync(foreign,"foreign\r\n");
     let links=0;fs.linkSync=()=>{links+=1;throw new Error("memory must not claim");};
-    await hooks["experimental.chat.system.transform"]({sessionID:d.sid},output);
+    await deliverTo(hooks, d.sid, output);
     assert.strictEqual(links,0);assert.deepStrictEqual(output.system,["## PM 정체성 (compaction 복구)\n- task: main\n"]);
     assert.strictEqual(fs.readFileSync(foreign,"utf8"),"foreign\r\n");
   } else {
-    await hooks["experimental.chat.system.transform"]({sessionID:d.sid},output);
+    await deliverTo(hooks, d.sid, output);
     assert.deepStrictEqual(output.system,d.scenario==="child"?[]:[d.payload]);
     if(d.scenario==="foreign") assert.strictEqual(native.read(path.join(path.dirname(d.source),"compact-snapshot."+d.sid+".foreign-generation"),"utf8"),"foreign\r\n");
     if(d.scenario==="child") {assert.ok(fs.existsSync(d.source));assert.ok(!fs.existsSync(d.fence));}
@@ -1567,8 +1538,8 @@ fs.readFileSync=(target,...args)=>{const result=native.read(target,...args);if(s
         assert _snapshot_receipts(Path(data["root"]), data["sid"]) == []
         retry = _run_snapshot_claim_node(data, r'''
 const m=require("./ctx-guard-core.cjs"),d=JSON.parse(process.argv[1]);
-(async()=>{const h=await m.CtxGuardPlugin({directory:d.root,client:{session:{get:async({path:{id}})=>({data:{id}})}}});
-const out={system:[]};await h["experimental.chat.system.transform"]({sessionID:d.sid},out);console.log(JSON.stringify(out.system));})();
+(async()=>{const h=await m.createCtxGuard({location:{directory:d.root}, session:{get:async({sessionID:id})=> ({id})}});
+const out={system:[]};await deliverTo(h, d.sid, out);console.log(JSON.stringify(out.system));})();
 ''')
         assert retry == ([data["payload"]] if scenario == "pre_link" else [])
 
@@ -1613,7 +1584,7 @@ const wait=(predicate,label)=>{const deadline=Date.now()+5000;while(!predicate()
 const exists=(name)=>fs.existsSync(path.join(rendezvousDir,name));
 const both=(suffix)=>fs.readdirSync(rendezvousDir).filter(n=>n.endsWith(suffix)).length===2;
 (async()=>{
-  const hooks=await m.CtxGuardPlugin({directory:projectRoot,client:{session:{get:async({path:{id}})=>({data:{id}})}}});
+  const hooks=await m.createCtxGuard({location:{directory:projectRoot}, session:{get:async({sessionID:id})=> ({id})}});
   fs.linkSync=(source,destination)=>{
     if(!same(source,latestMarker)||!same(destination,fixed))throw new Error("claim path differs from fixed generation");
     observe("wrapper-entry",{sourcePath:String(source),destination:String(destination)});
@@ -1656,7 +1627,7 @@ const both=(suffix)=>fs.readdirSync(rendezvousDir).filter(n=>n.endsWith(suffix))
   };
   if(schedule!=="free_run"&&consumerID==="consumer-b")wait(()=>exists("old-gc-done"),"old-gc-done");
   const output={system:[]};
-  try{await hooks["experimental.chat.system.transform"]({sessionID},output);}
+  try{await deliverTo(hooks, sessionID, output);}
   finally{fs.linkSync=native.link;fs.unlinkSync=native.unlink;fs.writeFileSync=native.write;}
   console.log(JSON.stringify({consumerID,wonLatest,lostLatest,linkAttempts,receiptWrites,trace,output:output.system,
     oldExistsAfterTransform:fs.existsSync(oldMarker),sourceAfter:fs.existsSync(latestMarker),fenceAfter:fs.existsSync(fixed)}));
@@ -1677,7 +1648,7 @@ const both=(suffix)=>fs.readdirSync(rendezvousDir).filter(n=>n.endsWith(suffix))
 
     processes = [
         subprocess.Popen(
-            [_NODE, "-e", render_consumer(consumer_id)],
+            [_NODE, "-e", FAKE_CONTEXT_JS + render_consumer(consumer_id)],
             cwd=str(project_root / ".opencode" / "lib"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1761,14 +1732,14 @@ const sessionID = __SESSION_ID__;
 const latestPayload = __LATEST_PAYLOAD__;
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{
-    get: async ({path:{id}}) => ({data:{id}}),
-  }}, directory:projectRoot});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
+    get: async ({sessionID:id}) => ({id}),
+  }});
   const firstOutput = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, firstOutput);
+  await deliverTo(hooks, sessionID, firstOutput);
   assert.deepStrictEqual(firstOutput.system, [latestPayload], "surviving latest was not delivered");
   const secondOutput = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, secondOutput);
+  await deliverTo(hooks, sessionID, secondOutput);
   assert.deepStrictEqual(secondOutput.system, [], "surviving latest was delivered more than once");
   console.log("JS_SNAPSHOT_PRECLAIM_CRASH_RECOVERY_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
@@ -1812,10 +1783,10 @@ const projectRoot = __PROJECT_ROOT__;
 const sessionID = __SESSION_ID__;
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{
-    get: async ({path:{id}}) => ({data:{id}}),
-  }}, directory:projectRoot});
-  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
+    get: async ({sessionID:id}) => ({id}),
+  }});
+  await hooks.event({type:"session.compaction.ended", data:{sessionID}});
   console.log("JS_SNAPSHOT_RECEIPT_GC_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''.replace("__PROJECT_ROOT__", json.dumps(str(project_root))).replace(
@@ -1856,10 +1827,10 @@ const receiptPaths = () => fs.readdirSync(markerDir)
   .filter((name) => name.startsWith(`compact-snapshot-receipt.${sessionID}.`));
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{
-    get: async ({path:{id}}) => ({data:{id}}),
-  }}, directory:projectRoot});
-  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
+    get: async ({sessionID:id}) => ({id}),
+  }});
+  await hooks.event({type:"session.compaction.ended", data:{sessionID}});
   assert.strictEqual(markerPaths().length, 1, "snapshot was not staged");
 
   const originalWriteFileSync = fs.writeFileSync;
@@ -1871,7 +1842,7 @@ const receiptPaths = () => fs.readdirSync(markerDir)
   };
   const output = {system:[]};
   try {
-    await hooks["experimental.chat.system.transform"]({sessionID}, output);
+    await deliverTo(hooks, sessionID, output);
   } finally {
     fs.writeFileSync = originalWriteFileSync;
   }
@@ -1908,19 +1879,19 @@ const projectRoot = __PROJECT_ROOT__;
 const sessionID = __SESSION_ID__;
 
 (async () => {
-  const client = {session:{get: async ({path:{id}}) => ({data:{id}})}};
-  const hooks = await m.CtxGuardPlugin({client, directory:projectRoot});
-  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const client = {session:{get: async ({sessionID:id}) => ({id})}};
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:client.session});
+  await hooks.event({type:"session.compaction.ended", data:{sessionID}});
   const output = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  await deliverTo(hooks, sessionID, output);
   // 엔진의 압축 경계 marker 도 같은 ctx-stop 경로라 실제 IO 실패를 원인 경고로 싣고, snapshot 은 memory 로 전달한다.
   assert.strictEqual(output.system.length, 2, "IO failure blocked in-memory delivery");
   assert.ok(output.system[0].startsWith("[ctx-guard] 압축 경계 판정 실패("), output.system[0]);
   assert.ok(output.system[1].startsWith("## PM 정체성 (compaction 복구)"), "in-memory snapshot missing");
 
-  const restarted = await m.CtxGuardPlugin({client, directory:projectRoot});
+  const restarted = await m.createCtxGuard({location:{directory:projectRoot}, session:client.session});
   const freshOutput = {system:[]};
-  await restarted["experimental.chat.system.transform"]({sessionID}, freshOutput);
+  await deliverTo(restarted, sessionID, freshOutput);
   assert.deepStrictEqual(freshOutput.system, [], "failed marker path produced phantom payload");
   console.log("JS_DURABLE_SNAPSHOT_IO_FAIL_SOFT_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
@@ -1961,16 +1932,16 @@ const markerDir = __MARKER_DIR__;
 const preservedMarker = __PRESERVED_MARKER__;
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{get: async ({path:{id}}) => ({
-    data:{id, parentID:"ses_parent"},
-  })}}, directory:projectRoot});
-  await hooks.event({event:{type:"session.compacted", properties:{sessionID:stagedChildID}}});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{get: async ({sessionID:id}) => ({
+    id, parentID:"ses_parent",
+  })}});
+  await hooks.event({type:"session.compaction.ended", data:{sessionID:stagedChildID}});
   const stagedMarkers = fs.readdirSync(markerDir)
     .filter((name) => name.startsWith(`compact-snapshot.${stagedChildID}.`));
   assert.deepStrictEqual(stagedMarkers, [], "child compaction staged marker");
 
   const output = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID:preservedChildID}, output);
+  await deliverTo(hooks, preservedChildID, output);
   assert.deepStrictEqual(output.system, [], "child transform injected durable marker");
   assert.strictEqual(fs.readFileSync(preservedMarker, "utf8"), "must remain", "child consumed marker");
   console.log("JS_CHILD_DURABLE_SNAPSHOT_EXEMPT_OK");
@@ -2072,7 +2043,7 @@ console.log("JS_COMPACTION_RESTART_BOUNDARY_OK");
 
 
 def test_child_compaction_is_classified_before_any_snapshot_subprocess(tmp_path):
-    """면제 자식의 session.compacted는 동기 pm_log snapshot/checkpoint를 한 번도 실행하지 않는다."""
+    """면제 자식의 session.compaction.ended는 동기 pm_log snapshot/checkpoint를 한 번도 실행하지 않는다."""
     if _NODE is None:
         import pytest
 
@@ -2094,10 +2065,10 @@ const probe = __PROBE__;
 const sessionID = "ses_child_no_snapshot";
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{
-    get: async () => ({data:{id:sessionID, parentID:"ses_parent"}}),
-  }}, directory:projectRoot});
-  await hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
+    get: async () => ({id:sessionID, parentID:"ses_parent"}),
+  }});
+  await hooks.event({type:"session.compaction.ended", data:{sessionID}});
   assert.strictEqual(fs.existsSync(probe), false, "child compaction spawned pm_log");
   console.log("JS_CHILD_COMPACTION_NO_SUBPROCESS_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
@@ -2109,11 +2080,11 @@ const sessionID = "ses_child_no_snapshot";
 
 
 def test_plugin_stages_compacted_notice_after_child_lookup_before_event_hook_settles(tmp_path):
-    """자식 판정을 먼저 하되 즉시 해소된 메인 조회는 첫 transform 전에 안내를 적재한다.
+    """자식 판정을 먼저 하되 즉시 해소된 메인 조회는 다음 context 훅 전에 안내를 적재한다.
 
-    upstream opencode v1.18.5 ``plugin/index.ts`` 의 event dispatcher는 각 plugin event hook을
-    await하지 않는다. snapshot이 자식 판정 뒤임을 정적으로 단언하고, 즉시 해소되는 메인 조회와
-    pending toast 사이에도 transform이 안내를 소비할 수 있는지 동적으로 검증한다.
+    플러그인의 버스 구독 루프는 이벤트 처리를 기다리지 않는다(`void guard.event(value)`). snapshot 이
+    자식 판정 뒤임을 정적으로 단언하고, 기다리지 않은 압축 이벤트의 안내를 다음 context 훅이 싣는지
+    동적으로 검증한다.
     """
     if _NODE is None:
         import pytest
@@ -2121,7 +2092,8 @@ def test_plugin_stages_compacted_notice_after_child_lookup_before_event_hook_set
         pytest.skip("node 없음 — non-awaited compacted event 경합 단위 skip")
 
     src = _plugin_src()
-    branch = src.index('if (event.type === "session.compacted")')
+    assert "for await (const value of events) void guard.event(value);" in src
+    branch = src.index("async function compacted(sessionID)")
     child_check = src.index('if ((await sessionOwner(sessionID)) !== "main") return;', branch)
     snapshot = src.index("buildCompactionSnapshot(root, sessionID)", branch)
     assert child_check < snapshot, "자식 판정 전에 동기 snapshot subprocess를 실행함"
@@ -2134,26 +2106,18 @@ const projectRoot = __PROJECT_ROOT__;
 const sessionID = "ses_unawaited_compacted";
 
 (async () => {
-  let resolveToast;
-  const toastPending = new Promise((resolve) => { resolveToast = resolve; });
-  const hooks = await m.CtxGuardPlugin({client:{session:{
-    get: async ({path:{id}}) => ({data:{id}}),
-  }, tui:{showToast: async () => toastPending}}, directory:projectRoot});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
+    get: async ({sessionID:id}) => ({id}),
+  }});
 
-  // plugin/index.ts dispatcher와 같이 반환 Promise를 기다리지 않는다.
-  let eventSettled = false;
-  const eventPromise = hooks.event({event:{
-    type:"session.compacted", properties:{sessionID}
-  }}).then(() => { eventSettled = true; });
+  // 구독 루프와 같이 반환 Promise를 기다리지 않는다.
+  const eventPromise = hooks.event({type:"session.compaction.ended", data:{sessionID}});
   await new Promise((resolve) => setImmediate(resolve));
 
   const output = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, output);
-  assert.strictEqual(eventSettled, false, "toast fixture did not keep event hook pending");
+  await deliverTo(hooks, sessionID, output);
   assert.strictEqual(output.system.length, 1, "unawaited event did not stage notice");
   assert.ok(output.system[0].includes("## PM 정체성 (compaction 복구)"));
-
-  resolveToast();
   await eventPromise;
   console.log("JS_COMPACTED_SYNC_STAGE_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
@@ -2165,7 +2129,7 @@ const sessionID = "ses_unawaited_compacted";
 def test_plugin_cycle_epoch_rejects_old_message_after_compaction_reset(tmp_path):
     """lookup await 중 re-arm이 끼어든 구 메시지는 새 사이클 상태를 덮지 않는다.
 
-    epoch guard를 제거한 구 코드에서는 lookup 해제 후 old message.updated가 compacted
+    epoch guard를 제거한 구 코드에서는 lookup 해제 후 old session.step.ended가 compacted
     안내를 warn로 덮고 fired.warn를 다시 올려 이 테스트가 red가 된다.
     """
     if _NODE is None:
@@ -2179,30 +2143,28 @@ const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 const projectRoot = __PROJECT_ROOT__;
 const sessionID = "ses_cycle_epoch";
-const warnEvent = () => ({event:{type:"message.updated", properties:{info:{
-  sessionID, role:"assistant", tokens:{input:145000}
-}}}});
+const warnEvent = () => ({type:"session.step.ended", data:{sessionID, tokens:{input:145000}}});
 
 (async () => {
   let resolveLookup;
-  const hooks = await m.CtxGuardPlugin({client:{session:{
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
     get: () => new Promise((resolve) => { resolveLookup = resolve; }),
-  }}, directory:projectRoot});
+  }});
 
   const oldMessage = hooks.event(warnEvent());
   assert.strictEqual(typeof resolveLookup, "function", "lookup await boundary was not reached");
-  const compacted = hooks.event({event:{type:"session.compacted", properties:{sessionID}}});
+  const compacted = hooks.event({type:"session.compaction.ended", data:{sessionID}});
   resolveLookup({data:{id:sessionID}});
   await Promise.all([oldMessage, compacted]);
 
   const output = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, output);
+  await deliverTo(hooks, sessionID, output);
   assert.strictEqual(output.system.length, 1, "compacted notice was lost");
   assert.ok(output.system[0].includes("## PM 정체성 (compaction 복구)"), "old message overwrote snapshot");
 
   await hooks.event(warnEvent());
   const freshOutput = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, freshOutput);
+  await deliverTo(hooks, sessionID, freshOutput);
   assert.strictEqual(freshOutput.system.length, 1, "old message dirtied re-armed fired state");
   assert.ok(freshOutput.system[0].includes("[ctx-warn]"), "fresh-cycle warn did not fire");
   console.log("JS_CYCLE_EPOCH_GUARD_OK");
@@ -2227,14 +2189,12 @@ const projectRoot = __PROJECT_ROOT__;
 const firstID = "ses_race_first";
 const secondID = "ses_race_second";
 const resolvers = new Map();
-const warnEvent = (sessionID, input) => ({event:{type:"message.updated", properties:{info:{
-  sessionID, role:"assistant", tokens:{input}
-}}}});
+const warnEvent = (sessionID, input) => ({type:"session.step.ended", data:{sessionID, tokens:{input}}});
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{
-    get: ({path:{id}}) => new Promise((resolve) => resolvers.set(id, resolve)),
-  }}, directory:projectRoot});
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{
+    get: ({sessionID:id}) => new Promise((resolve) => resolvers.set(id, resolve)),
+  }});
 
   const first = hooks.event(warnEvent(firstID, 145000));
   const second = hooks.event(warnEvent(secondID, 155000));
@@ -2245,9 +2205,9 @@ const warnEvent = (sessionID, input) => ({event:{type:"message.updated", propert
   await first;
 
   const firstOutput = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID:firstID}, firstOutput);
+  await deliverTo(hooks, firstID, firstOutput);
   const secondOutput = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID:secondID}, secondOutput);
+  await deliverTo(hooks, secondID, secondOutput);
   assert.strictEqual(firstOutput.system.length, 1);
   assert.ok(firstOutput.system[0].includes("[ctx-warn]"), "first SID lost its warn payload");
   assert.strictEqual(secondOutput.system.length, 1);
@@ -2273,41 +2233,30 @@ const assert = require("node:assert");
 const projectRoot = __PROJECT_ROOT__;
 const mainID = "ses_main_warn";
 const childID = "ses_child_warn";
-const warnEvent = (sessionID) => ({
-  event: {type:"message.updated", properties:{info:{
-    sessionID, role:"assistant", tokens:{input:145000}
-  }}}
+const warnEvent = (sessionID) => ({type:"session.step.ended", data:{sessionID, tokens:{input:145000}}
 });
 
 (async () => {
-  const hooks = await m.CtxGuardPlugin({
-    client:{
-      session:{get: async ({path:{id}}) => ({
-        data:{id, ...(id === childID ? {parentID:mainID} : {})}
-      })},
-      tui:{showToast: async () => {}},
-    },
-    directory:projectRoot,
-  });
+  const hooks = await m.createCtxGuard({location:{directory:projectRoot}, session:{get: async ({sessionID:id}) => ({id, ...(id === childID ? {parentID:mainID} : {})})}});
 
   await hooks.event(warnEvent(mainID));
   const childOutput = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID:childID}, childOutput);
+  await deliverTo(hooks, childID, childOutput);
   assert.deepStrictEqual(childOutput.system, [], "child consumed main pending warn");
 
   const mainOutput = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID:mainID}, mainOutput);
+  await deliverTo(hooks, mainID, mainOutput);
   assert.strictEqual(mainOutput.system.length, 1, "main did not receive its pending warn");
   assert.ok(mainOutput.system[0].includes("[ctx-warn]"), "wrong main warn payload");
   assert.ok(mainOutput.system[0].includes("pm_log.py checkpoint"), "checkpoint command missing");
 
   const mainAgain = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID:mainID}, mainAgain);
+  await deliverTo(hooks, mainID, mainAgain);
   assert.deepStrictEqual(mainAgain.system, [], "main warn was not consumed exactly once");
 
   await hooks.event(warnEvent(childID));
   const childAgain = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID:childID}, childAgain);
+  await deliverTo(hooks, childID, childAgain);
   assert.deepStrictEqual(childAgain.system, [], "child event created an exempt warn");
   console.log("JS_WARN_SESSION_ISOLATED_OK");
 })().catch((err) => { console.error(err); process.exitCode = 1; });
@@ -2316,12 +2265,12 @@ const warnEvent = (sessionID) => ({
     assert "JS_WARN_SESSION_ISOLATED_OK" in out, f"warn 세션 격리 실패. out={out!r}"
 
 
-def test_plugin_emits_nudge():
-    """경고(이른 경고) 경로가 있다 — checkpoint_at_pct 이상이면 안내(toast/message)."""
+def test_plugin_emits_nudge_and_budget_notice_to_the_model_only():
+    """구간 안내와 한도 기록 알림은 모델 시스템 문구로만 나간다(opencode 2.x 서버 플러그인에는 사람용 알림 창이 없다)."""
     src = _plugin_src()
-    assert "warn" in src.lower(), "경고 로직 없음"
-    # toast 경고 경로 (best-effort).
-    assert "showToast" in src or "toast" in src.lower(), "경고 안내(toast) 경로 없음"
+    assert "state.pendingNotice = `[ctx-budget] ${decision.notice}`;" in src
+    assert "value.system.push({ type: \"text\", text: session.pendingNotice });" in src
+    assert "showToast" not in src and "tui" not in src
 
 
 # ── 3. 순수 결정 로직 자가검증 (node 있으면) ─────────────────────────────────
@@ -2338,14 +2287,12 @@ def _run_node_check(
     # project_root 를 주면 그 픽스처의 설치 사본(`<root>/.opencode/lib/`)에서 돌린다 —
     # 팩토리가 쓰는 엔진 루트가 픽스처 루트여야 산출물이 소스 트리에 남지 않는다.
     if project_root is not None:
-        # 분모 = 기본 입력(사용 한도 200,000)으로 적용한 압축 한도 기록. 메시지에는 기록 모델의
-        # providerID·modelID(opencode AssistantMessage 실제 필드)를 싣는다.
+        # 분모 = 기본 입력(사용 한도 200,000)으로 적용한 압축 한도 기록. 단계 이벤트에 모델을 싣지 않으면
+        # (session.step.started 없음) 엔진은 모델 비교를 하지 않는다.
         from test_harness_ctx_limits import install_ctx_record
         install_ctx_record(project_root, harness="opencode", capacity=2000000)
-        script=re.sub(r'role\s*:\s*(["\'])assistant\1',
-            f'modelID:"{SHIPPED_MODEL_ID}", providerID:"ollama", role:"assistant"',script)
     proc = subprocess.run(
-        [_NODE, "-e", script, *(node_args or [])],
+        [_NODE, "-e", FAKE_CONTEXT_JS + script, *(node_args or [])],
         cwd=str(CORE_DIR if project_root is None else project_root / ".opencode" / "lib"),
         capture_output=True,
         timeout=30,
@@ -2370,10 +2317,12 @@ def test_plugin_pure_logic_node_selfcheck():
 const m = require("./ctx-guard-core.cjs");
 const assert = require("node:assert");
 
-// export 범위 — native 관측 헬퍼와 팩토리만. 구간·예산·설정·문구 판정은 엔진이 소유한다.
-for (const fn of ["accumulateTokens","CtxGuardPlugin"]) {
+// export 범위 — 관측 헬퍼·처리기·플러그인 정의. 구간·예산·설정·문구 판정은 엔진이 소유한다.
+for (const fn of ["accumulateTokens","createCtxGuard"]) {
   assert.strictEqual(typeof m[fn], "function", "missing export: " + fn);
 }
+assert.strictEqual(m.CtxGuardPlugin.id, "pm.ctx-guard");
+assert.strictEqual(typeof m.CtxGuardPlugin.setup, "function");
 for (const removed of ["resolveThresholds","resolveBudget","CHECKPOINT_AT_PCT_DEFAULT","CTX_WINDOW_TOKENS_DEFAULT",
                        "parseLocalConf","loadLocalConf","readBudget","computeCtxState",
                        "buildEngineCtxGuidance"]) {
@@ -2407,17 +2356,15 @@ def test_plugin_requires_cleanly_in_node():
 
 
 def test_plugin_injects_nudge_to_model():
-    """warn 안내를 모델 컨텍스트에 비차단 주입한다 (toast=사람 / system.transform=모델).
+    """warn 안내를 모델 컨텍스트에 비차단 주입한다 — session `context` 훅의 system 에 text 조각을 더한다.
 
-    chat.message 의 full Part 구성(id/sessionID/messageID 필수)보다 system[] string push 가
-    안전 — experimental.chat.system.transform 채택. 엔진이 안내를 낸 응답에서 pendingWarnText 세팅 →
-    다음 모델 호출에 1회 소비.
+    엔진이 안내를 낸 응답에서 pendingWarnText 세팅 → 다음 모델 호출에 1회 소비.
     """
     src = _plugin_src()
-    assert "experimental.chat.system.transform" in src, "모델 주입 훅(system.transform) 없음"
+    assert 'await ctx.session.hook("context", guard.context);' in src, "모델 주입 훅(session context) 없음"
     assert "pendingWarnText" in src, "warn 주입 대기 플래그 없음"
-    assert "output.system.push" in src, "system[] 에 push 하는 주입 경로 없음"
-    # 엔진 응답이 안내(emit)면 그 안내를 그대로 pendingWarnText 에 세팅한다(toast 와 함께).
+    assert "value.system.push({ type: \"text\", text: session.pendingWarnText });" in src
+    # 엔진 응답이 안내(emit)면 그 안내를 그대로 pendingWarnText 에 세팅한다.
     assert "if (!decision.emit) return;" in src
     assert "state.pendingWarnText = decision.guidance" in src, "warn 감지 시 중앙 안내 세팅 누락"
 
@@ -2427,15 +2374,12 @@ def test_plugin_injects_nudge_to_model():
 
 
 def test_plugin_injects_nudge2_to_model():
-    """2단(strong)·최종 warn 도 모델 컨텍스트에 비차단 주입 + 사람용 2단 toast (T-0328).
+    """2단(strong)·최종 warn 도 같은 pendingWarnText 채널로 모델에 비차단 주입한다.
 
-    2단 임계 파생·구간 판정·안내 문구·사이클당 1회는 엔진이 소유한다. plugin 은 엔진 응답 level 로
-    toast 강도만 고르고 같은 pendingWarnText 채널에 싣는다."""
+    2단 임계 파생·구간 판정·안내 문구·사이클당 1회는 엔진이 소유한다. plugin 은 level 로 가르지 않는다."""
     src = _plugin_src()
-    for removed in ("fired.warn2",):
+    for removed in ("fired.warn2", "decision.level", "notifyWarn"):
         assert removed not in src, f"2단 판정 사본 잔존: {removed}"
-    assert 'if (decision.level === "warn") await notifyWarn(decision.guidance);' in src
-    assert "else await notifyWarn2(decision.guidance);" in src, "2단 toast(notifyWarn2) 경로 없음"
     assert "state.pendingWarnText = decision.guidance" in src, "warn2 감지 시 중앙 안내 세팅 누락"
 
 def test_js_warn2_level_and_guidance(tmp_path):
@@ -2459,14 +2403,12 @@ def test_js_warn2_level_and_guidance(tmp_path):
 const m = require("./ctx-guard-core.cjs");
 const cases = JSON.parse(process.argv[1]);
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{get: async ({path:{id}}) => ({data:{id}})}},
-    directory:process.argv[2]});
+  const hooks = await m.createCtxGuard({location:{directory:process.argv[2]}, session:{get: async ({sessionID:id}) => ({id})}});
   const delivered = {};
   for (const [sessionID, input] of cases) {
-    await hooks.event({event:{type:"message.updated", properties:{info:{
-      sessionID, role:"assistant", tokens:{input}}}}});
+    await hooks.event({type:"session.step.ended", data:{sessionID, tokens:{input}}});
     const output = {system:[]};
-    await hooks["experimental.chat.system.transform"]({sessionID}, output);
+    await deliverTo(hooks, sessionID, output);
     delivered[sessionID] = output.system;
   }
   console.log(JSON.stringify(delivered));
@@ -2496,11 +2438,11 @@ const cases = JSON.parse(process.argv[1]);
 _OPENCODE_BIN = shutil.which("opencode")
 PM_OPENCODE_LIVE = os.environ.get("PM_OPENCODE_LIVE") == "1"
 
-# factory 가 CTX_GUARD_LOAD_PROBE 세팅 시 stderr 로 내는 로드 마커(core.cjs 와 문자열 일치).
+# setup 이 CTX_GUARD_LOAD_PROBE 세팅 시 stderr 로 내는 로드 마커(core.cjs 와 문자열 일치).
 _LOAD_MARKER = "[ctx-guard] plugin factory loaded"
-# opencode 가 로드 실패 시 남기는 로그 조각(실측 1.17.18).
+# opencode 가 로드 실패 시 남기는 로그 조각(실측 2.3.0 · packages/core/src/plugin/supervisor.ts·module.ts).
 _LOAD_FAIL = "failed to load plugin"
-_EXPORT_NOT_FN = "Plugin export is not a function"
+_NO_DEFINITION = "Plugin must export a default definition"
 
 import pytest  # noqa: E402  (라이브 검사 데코레이터용 — 이 지점 이후만 사용)
 
@@ -2511,20 +2453,21 @@ _live_skip = pytest.mark.skipif(
 
 
 def _run_opencode_load(project_dir: str) -> str:
-    """헤드리스 opencode 를 project_dir 에서 1회 띄워 stderr+stdout(DEBUG 로그)을 반환한다.
+    """헤드리스 opencode 를 project_dir 에서 1회 띄워 stderr+stdout(debug 로그)을 반환한다.
 
-    - CTX_GUARD_LOAD_PROBE=1 → factory 실행 시 로드 마커를 stderr 로 낸다(실 세션엔 무음).
-    - 모델은 nonexistent → 플러그인 로드(모델 호출 *전* 단계) 후 즉시 실패(실 API 호출·비용 없음).
-    - --dir project_dir → opencode 가 그 트리의 .opencode/ 를 로드(PWD 해석 회피·adopter 경험 미러).
+    - CTX_GUARD_LOAD_PROBE=1 → setup 실행 시 로드 마커를 stderr 로 낸다(실 세션엔 무음).
+    - 모델은 nonexistent → 플러그인 적재 뒤 모델 확인에서 실패(실 API 호출·비용 없음).
+    - cwd·PWD=project_dir · --standalone → 그 폴더의 .opencode/ 를 이 프로세스의 서버가 적재한다(상주 서비스
+      미사용). opencode 는 작업 폴더를 PWD 에서 읽으므로 cwd 와 함께 PWD 도 맞춘다.
     """
-    env = dict(os.environ, CTX_GUARD_LOAD_PROBE="1")
+    env = dict(os.environ, CTX_GUARD_LOAD_PROBE="1", PWD=project_dir)
     proc = subprocess.run(
         [
-            _OPENCODE_BIN, "run", "--dir", project_dir,
-            "--print-logs", "--log-level", "DEBUG",
-            "-m", "nonexistent/model-t0283-loadgate", "noop",
+            _OPENCODE_BIN, "run", "--standalone",
+            "--print-logs", "--log-level", "debug",
+            "-m", "nonexistent/model-loadgate", "noop",
         ],
-        capture_output=True, text=True, timeout=180, env=env,
+        cwd=project_dir, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180, env=env,
     )
     return (proc.stderr or "") + (proc.stdout or "")
 
@@ -2549,9 +2492,8 @@ def _stage_opencode_project(root: Path, plugin_body: str | None = None) -> Path:
 def test_live_opencode_loads_ctx_guard_plugin(harness_tmp_path):
     """실 opencode 헤드리스가 출하 ctx-guard 플러그인을 autoload 성공하는지 실측 (T-0283 핵심 검사).
 
-    단언: (1) "failed to load plugin" 부재 (2) "Plugin export is not a function" 부재
-    (3) factory 실행 마커 존재 = 플러그인이 실제로 로드되고 팩토리가 돌았다. 유닛 green 만으론
-    못 잡던 갭(실 세션 로드 실패)을 이 검사가 닫는다.
+    단언: (1) "failed to load plugin" 부재 (2) 정의 형식 오류 부재 (3) setup 실행 마커 존재 = 플러그인이
+    실제로 적재되고 setup 이 돌았다. 유닛 green 만으론 못 잡던 갭(실 세션 적재 실패)을 이 검사가 닫는다.
     """
     td = harness_tmp_path / "live-load"
     td.mkdir()
@@ -2560,8 +2502,8 @@ def test_live_opencode_loads_ctx_guard_plugin(harness_tmp_path):
     assert _LOAD_FAIL not in log, (
         f"opencode 가 ctx-guard 플러그인 로드 실패 (T-0283 회귀). 로그 꼬리:\n{log[-2500:]}"
     )
-    assert _EXPORT_NOT_FN not in log, (
-        f"export 형식 회귀 — 함수 아님. 로그 꼬리:\n{log[-2500:]}"
+    assert _NO_DEFINITION not in log, (
+        f"export 형식 회귀 — default 플러그인 정의 아님. 로그 꼬리:\n{log[-2500:]}"
     )
     assert _LOAD_MARKER in log, (
         f"플러그인 factory 실행 마커 부재 — autoload 안 됨. 로그 꼬리:\n{log[-2500:]}"
@@ -2569,24 +2511,23 @@ def test_live_opencode_loads_ctx_guard_plugin(harness_tmp_path):
 
 
 @_live_skip
-def test_live_check_rejects_broken_object_export(harness_tmp_path):
-    """sensitivity 대조군: T-0283 원 버그 형태(CJS 객체 export)를 심으면 이 검사가 *실제로* 로드 실패를
-    잡는지 실측 — false-green(무조건 통과) 방지. 대조군 진입점만 교체하고 core 는 그대로 둔다.
+def test_live_check_rejects_named_factory_export(harness_tmp_path):
+    """sensitivity 대조군: default 정의 없이 이름 붙은 함수만 내보내는 진입점을 심으면 이 검사가 *실제로* 적재
+    실패를 잡는지 실측 — false-green(무조건 통과) 방지. 대조군 진입점만 교체하고 core 는 그대로 둔다.
 
     이 대조군이 없으면 검사가 opencode 로그 형식 변화 등으로 조용히 무력화돼도 초록으로 통과할 수 있다.
     """
     broken = (
-        "// T-0283 원 버그 재현(대조군) — CJS 객체 export = opencode 가 함수 아니라며 로드 거부.\n"
-        'const core = require("../lib/ctx-guard-core.cjs");\n'
-        "module.exports = { CtxGuardPlugin: core.CtxGuardPlugin, "
-        "parseLocalConf: core.parseLocalConf, accumulateTokens: core.accumulateTokens };\n"
+        "// 대조군 — default 플러그인 정의 없음 = opencode 가 정의 형식 오류로 적재 거부.\n"
+        'import core from "../lib/ctx-guard-core.cjs";\n'
+        "export const CtxGuardPlugin = async () => core.CtxGuardPlugin;\n"
     )
     td = harness_tmp_path / "live-broken"
     td.mkdir()
     _stage_opencode_project(td, plugin_body=broken)
     log = _run_opencode_load(str(td))
-    assert _LOAD_FAIL in log or _EXPORT_NOT_FN in log, (
-        "검사 무력화 위험 — 깨진 CJS 객체 export 를 opencode 가 로드 실패로 보고하지 않았다 "
+    assert _LOAD_FAIL in log and _NO_DEFINITION in log, (
+        "검사 무력화 위험 — default 정의 없는 진입점을 opencode 가 적재 실패로 보고하지 않았다 "
         f"(로그 형식 변화?). 로그 꼬리:\n{log[-2500:]}"
     )
     assert _LOAD_MARKER not in log, (
@@ -2605,18 +2546,14 @@ const assert = require("node:assert");
 const [providerID, modelID, input, sessionID] = [process.argv[1], process.argv[2], Number(process.argv[3]),
   process.argv[4]];
 (async () => {
-  const toasts = [];
-  const hooks = await m.CtxGuardPlugin({client:{
-    session:{get: async ({path}) => ({data:{id:path.id}})},
-    tui:{showToast: async (toast) => { toasts.push(toast.body.message); }},
-  }, directory: process.cwd()});
-  const event = {event:{type:"message.updated", properties:{info:{
-    sessionID, role:"assistant", providerID, modelID, tokens:{input}}}}};
-  await hooks.event(event);
-  await hooks.event(event);
+  const hooks = await m.createCtxGuard({location:{directory:process.cwd()}, session:{get: async ({sessionID}) => ({id:sessionID})}});
+  for (let step = 0; step < 2; step += 1) {
+    await hooks.event(stepStarted(sessionID, providerID, modelID));
+    await hooks.event(stepEnded(sessionID, {input}));
+  }
   const output = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID}, output);
-  console.log(JSON.stringify({toasts, system: output.system}));
+  await deliverTo(hooks, sessionID, output);
+  console.log(JSON.stringify({system: output.system}));
 })().catch((err) => { console.error(err); process.exitCode = 1; });
 '''
 
@@ -2630,7 +2567,7 @@ def _t0943_project(tmp_path: Path) -> Path:
 
 
 def _t0943_plugin_run(root: Path, provider: str, model: str, tokens: int, session: str = "t0943") -> dict:
-    proc = subprocess.run([_NODE, "-e", _T0943_SCRIPT, provider, model, str(tokens), session],
+    proc = subprocess.run([_NODE, "-e", FAKE_CONTEXT_JS + _T0943_SCRIPT, provider, model, str(tokens), session],
                           cwd=str(root / ".opencode" / "lib"), capture_output=True, text=True,
                           encoding="utf-8", timeout=30)
     assert proc.returncode == 0, proc.stderr
@@ -2639,23 +2576,23 @@ def _t0943_plugin_run(root: Path, provider: str, model: str, tokens: int, sessio
 
 @pytest.mark.skipif(_NODE is None, reason="node 없음")
 def test_t0943_plugin_recorded_model_nudges_other_model_warns(tmp_path):
-    """기록에 있는 `provider/model` 이면 경고 없이 안내, 다른 모델이면 같은 안내에 toast 경고 한 번."""
+    """기록에 있는 `provider/model` 이면 알림 없이 안내, 다른 모델이면 안내 앞에 한도 기록 알림 한 번(시스템 문구)."""
     from test_harness_ctx_limits import install_ctx_record
     root = _t0943_project(tmp_path)
     assert install_ctx_record(root, _T0943_CONF, harness="opencode", capacity=200000) == SHIPPED_MODEL
     # 구간 안내 1회는 세션별 durable marker 라 두 실행은 서로 다른 세션으로 본다.
     same = _t0943_plugin_run(root, "ollama", SHIPPED_MODEL_ID, 162000, "t0943-same")  # 81% of E 200,000
     assert len(same["system"]) == 1 and "[ctx-warn] 컨텍스트 사용 81%" in same["system"][0]
-    assert not [text for text in same["toasts"] if "[ctx-budget]" in text]
     other = _t0943_plugin_run(root, "openrouter", SHIPPED_MODEL_ID, 162000, "t0943-other")
-    assert len(other["system"]) == 1 and "[ctx-warn] 컨텍스트 사용 81%" in other["system"][0]
-    warnings = [text for text in other["toasts"] if "[ctx-budget]" in text]
-    assert len(warnings) == 1 and "모델이 바뀌었습니다" in warnings[0] and f"openrouter/{SHIPPED_MODEL_ID}" in warnings[0]
+    assert len(other["system"]) == 2 and "[ctx-warn] 컨텍스트 사용 81%" in other["system"][1]
+    notice = other["system"][0]
+    assert notice.startswith("[ctx-budget] ") and "모델이 바뀌었습니다" in notice
+    assert f"openrouter/{SHIPPED_MODEL_ID}" in notice
 
 
 @pytest.mark.skipif(_NODE is None, reason="node 없음")
-def test_t0943_plugin_missing_record_toasts_error(tmp_path):
-    """기록이 없으면 toast 로 오류를 알리고(무음 반환 아님) 안내는 만들지 않는다. 대기 연결 상태는 없다."""
+def test_t0943_plugin_missing_record_tells_the_model(tmp_path):
+    """기록이 없으면 시스템 문구로 오류를 알리고(무음 반환 아님) 안내는 만들지 않는다. 대기 연결 상태는 없다."""
     root = _t0943_project(tmp_path)
     (root / ".project_manager" / "local.conf").write_text("", encoding="utf-8")
     shutil.copyfile(REPO / ".project_manager" / "tools" / "local_conf.py",
@@ -2664,7 +2601,7 @@ def test_t0943_plugin_missing_record_toasts_error(tmp_path):
                     root / ".project_manager" / "tools" / "pm_engine",
                     ignore=shutil.ignore_patterns("__pycache__"), dirs_exist_ok=True)
     result = _t0943_plugin_run(root, "ollama", SHIPPED_MODEL_ID, 190000)
-    assert result["system"] == []
-    errors = [text for text in result["toasts"] if "[ctx-budget]" in text]
-    assert len(errors) == 1 and "압축 한도 기록이 없습니다" in errors[0] and "`pm_config.py apply`" in errors[0]
+    assert len(result["system"]) == 1
+    error = result["system"][0]
+    assert error.startswith("[ctx-budget] ") and "압축 한도 기록이 없습니다" in error and "`pm_config.py apply`" in error
     assert "observedIdentity" not in _plugin_src()

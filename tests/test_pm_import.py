@@ -2276,7 +2276,7 @@ def test_combination_install_manifest_is_selected_tree_union(pm_import, pm_updat
     assert {
         ".opencode/agents/developer.md",
         ".opencode/lib/safe-write-core.cjs",
-        ".opencode/plugins/safe-write.js",
+        ".opencode/plugins/git-check.js",
         ".opencode/pm-instructions.md",
         ".opencode/pm_orch_opencode.py",
         ".opencode/.gitignore",
@@ -2364,7 +2364,7 @@ def test_combination_install_then_update_repairs_stale_opencode_in_one_run(
     assert import_cmd.main(pm_paths.home_at(pm_import.REPO), [
         "--new", str(dest), "--harness", "claude,opencode", "--name", "Combo Update",
     ]) == 0
-    victim_rel = Path(".opencode/plugins/safe-write.js")
+    victim_rel = Path(".opencode/plugins/git-check.js")
     victim = dest / victim_rel
     expected = (REPO / "templates" / "opencode" / victim_rel).read_bytes()
     victim.write_text("// stale adopter copy\n", encoding="utf-8")
@@ -2387,7 +2387,7 @@ def test_combination_install_then_update_repairs_stale_opencode_in_one_run(
             "all",
             (
                 Path(".claude/ctx_guard.py"),
-                Path(".opencode/plugins/safe-write.js"),
+                Path(".opencode/plugins/git-check.js"),
                 Path(".codex/agents/developer.toml"),
             ),
         ),

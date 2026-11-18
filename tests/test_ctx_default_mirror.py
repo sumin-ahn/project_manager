@@ -64,12 +64,13 @@ def test_claude_and_codex_return_the_same_unmeasured_sentinel_before_first_respo
 
 
 def test_opencode_checks_ctx_evaluation_on_an_assistant_message_with_tokens(tmp_path):
-    """opencode 는 `message.updated` + `role==assistant` + `tokens` 관측 전에는 일반 도구 판정 요청에
-    ctx 를 싣지 않는다(context=null) — 첫 모델 응답 전에는 점유를 모르므로 ctx 안내·marker 가 없다
-    (codex/claude 의 0-sentinel 과 같은 결론). 관측 뒤에는 같은 요청에 그 토큰이 실린다."""
+    """opencode 는 단계 끝(`session.step.ended`) 토큰 관측 전에는 일반 도구 판정 요청에 ctx 를 싣지 않는다
+    (context=null) — 단계 시작(모델만)으로는 점유를 모르므로 ctx 안내·marker 가 없다(codex/claude 의
+    0-sentinel 과 같은 결론). 관측 뒤에는 같은 요청에 그 토큰이 실린다."""
     import json
     import shutil
 
+    from _opencode_model import SHIPPED_MODEL_ID
     from test_opencode_ctx_guard import _make_ctx_guard_project, _run_node_check
 
     if shutil.which("node") is None:
@@ -88,28 +89,25 @@ childProcess.spawnSync = (command, args, options) => {
 const m = require("./ctx-guard-core.cjs");
 (async () => {
   const sessionID = "ses_first_response";
-  const hooks = await m.CtxGuardPlugin({client:{session:{get: async ({path:{id}}) => ({data:{id}})}},
-    directory:process.argv[1]});
-  const read = () => hooks["tool.execute.before"]({tool:"read", sessionID}, {args:{filePath:"README.md"}});
+  const hooks = m.createCtxGuard({location:{directory:process.argv[1]}, session:{get: async ({sessionID}) => ({id:sessionID})}});
+  const read = () => hooks.before(toolEvent("read", sessionID, {path:"README.md"}));
   const delivered = async () => {
     const output = {system:[]};
-    await hooks["experimental.chat.system.transform"]({sessionID}, output);
+    await deliverTo(hooks, sessionID, output);
     return output.system;
   };
-  await hooks.event({event:{type:"message.updated", properties:{info:{sessionID, role:"user", tokens:{input:150000}}}}});
-  await hooks.event({event:{type:"message.updated", properties:{info:{sessionID, role:"assistant"}}}});
+  await hooks.event(stepStarted(sessionID, "ollama", process.argv[2]));
   await read();
   const before = await delivered();
-  await hooks.event({event:{type:"message.updated", properties:{info:{sessionID, role:"assistant",
-    tokens:{input:150000}}}}});
+  await hooks.event(stepEnded(sessionID, {input:150000}));
   await read();
   const after = await delivered();
   console.log(JSON.stringify({contexts, before, after}));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 """
-    out = _run_node_check(script, root, [str(root)])
+    out = _run_node_check(script, root, [str(root), SHIPPED_MODEL_ID])
     result = json.loads(out)
-    assert result["contexts"][0] is None, "첫 assistant 관측 전에 ctx 를 실었다"
+    assert result["contexts"][0] is None, "단계 끝 토큰 관측 전에 ctx 를 실었다"
     assert result["before"] == [], "첫 응답 전에 ctx 안내가 나갔다"
     assert result["contexts"][1]["tokens"] == 150_000 and result["contexts"][1]["boundary"] is None
     assert len(result["after"]) == 1 and result["after"][0].startswith("[ctx-warn] 컨텍스트 사용 75%")

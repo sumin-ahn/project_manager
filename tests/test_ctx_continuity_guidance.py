@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from _opencode_plugin import FAKE_CONTEXT_JS
 from _textio import utf8_child_env
 
 
@@ -273,15 +274,13 @@ def test_opencode_consumes_pm_log_guidance_verbatim(pm_log, tmp_path):
     if node is None:
         pytest.skip("node 없음")
     root, lib = _opencode_guidance_home(tmp_path)
-    script = r"""
+    script = FAKE_CONTEXT_JS + r"""
 const m = require("./ctx-guard-core.cjs");
 (async () => {
-  const hooks = await m.CtxGuardPlugin({client:{session:{get: async ({path:{id}}) => ({data:{id}})}},
-    directory:process.argv[1]});
-  await hooks.event({event:{type:"message.updated", properties:{info:{
-    sessionID:"ses_verbatim", role:"assistant", tokens:{input:150000}}}}});
+  const hooks = m.createCtxGuard({location:{directory:process.argv[1]}, session:{get: async ({sessionID}) => ({id:sessionID})}});
+  await hooks.event(stepEnded("ses_verbatim", {input:150000}));
   const output = {system:[]};
-  await hooks["experimental.chat.system.transform"]({sessionID:"ses_verbatim"}, output);
+  await deliverTo(hooks, "ses_verbatim", output);
   process.stdout.write(JSON.stringify(output.system));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 """

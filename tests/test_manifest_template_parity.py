@@ -841,3 +841,19 @@ def test_stall_watchdog_plugin_removal_retires_its_files_in_all_manifests():
     named = [path.relative_to(REPO).as_posix() for path in shipped
              if b"stall-watchdog" in path.read_bytes()]
     assert shipped and named == [], named
+
+
+RETIRED_SAFE_WRITE_ENTRY = ".opencode/plugins/safe-write.js"
+
+
+def test_safe_write_entry_retirement_is_declared_in_all_manifests():
+    """opencode 2.x 가 적재하지 못하는 safe-write 진입 파일은 4 manifest 모두 퇴역 지시로만 남는다.
+
+    출하 트리와 제품 루트에는 그 파일이 없다. core 모듈은 처분 결정까지 남는다(이 시험의 대상이 아니다)."""
+    for manifest in (ROOT_MANIFEST, CC_MANIFEST, OC_MANIFEST, CODEX_MANIFEST):
+        declared = retired_paths.parse_retired_path_directives(manifest)
+        assert (RETIRED_SAFE_WRITE_ENTRY, RETIRED_STALL_WATCHDOG_NEW) in declared, manifest
+        assert RETIRED_SAFE_WRITE_ENTRY not in _manifest_path_set(manifest), manifest
+        retired_paths.validated_retired_path_directives(REPO, [manifest])
+    for root in (REPO, *TEMPLATE_ROOTS.values()):
+        assert not (root / RETIRED_SAFE_WRITE_ENTRY).exists(), root

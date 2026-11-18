@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from _opencode_plugin import FAKE_CONTEXT_JS
 from _textio import utf8_child_env
 from _win_skip import posix_bash_supported
 from pm_engine.app import hooks
@@ -1718,16 +1719,15 @@ const assert = require("node:assert");
 const core = require("./git-check-core.cjs");
 const [home, relative, absolute, guidance] = process.argv.slice(1);
 (async () => {
- const toasts = [];
- const boundary = core.createToolBoundary({root: home, directory: home, worktree: home, client: {
-  tui: {showToast: async (toast) => { toasts.push(toast); }},
-  session: {get: async ({path}) => ({data: {id: path.id}})},
- }, contextFor: () => null, acceptContext: async () => {}});
+ const boundary = core.createToolBoundary({root: home, directory: home,
+  session: {get: async ({sessionID}) => ({id: sessionID})}, contextFor: () => null, acceptContext: async () => {}});
  await assert.rejects(
-  boundary.before({tool: "bash", sessionID: "S"}, {args: {command: relative}}),
+  boundary.before({tool: "shell", sessionID: "S", input: {command: relative}}),
   (error) => error.message.startsWith("[git-check/deny]") && error.message.endsWith(guidance));
- await boundary.before({tool: "bash", sessionID: "S"}, {args: {command: absolute}});
- assert.deepStrictEqual(toasts, []);
+ await boundary.before({tool: "shell", sessionID: "S", input: {command: absolute}});
+ const context = {sessionID: "S", system: []};
+ boundary.inject(context);
+ assert.deepStrictEqual(context.system, []);
  console.log("PYTEST_RETRY_OK");
 })().catch((error) => { console.error(error); process.exitCode = 1; });
 '''
@@ -1964,7 +1964,7 @@ const board = path.join(root, ".project_manager", "tools", "board.py");
 const git = {verdict:"deny", cwd_identity:"slot", reason:"원문\r\n거부"};
 const decision = {version:1, status:"ok", measured:true, used_pct:78, level:"warn2", notice:null,
   guidance:"안내", emit:true, compaction_new:false, compaction_guidance:null, compaction_boundary_id:null};
-const toolRequest = {version:1, cwd:root, tool_name:"write", tool_input:{filePath:"원문\r\n파일", content:"UTF-8 원문"},
+const toolRequest = {version:1, cwd:root, tool_name:"write", tool_input:{path:"원문\r\n파일", content:"UTF-8 원문"},
   shell_command:null, context:null, recall:null};
 const operations = {
   tool: {argv:["hook-tool", "--session", "ROOT"], input:JSON.stringify(toolRequest),
@@ -1996,7 +1996,7 @@ for (const platform of process.platform === "win32" ? ["win32"] : ["linux", "win
           calls.push(command);
           assert.strictEqual(command, chosen.command);
           assert.deepStrictEqual(args, [...chosen.prefixArgs, board, ...operation.argv]);
-          assert.deepStrictEqual(options, {encoding:"utf8", maxBuffer:1048576, input:operation.input});
+          assert.deepStrictEqual(options, {cwd:undefined, encoding:"utf8", maxBuffer:1048576, input:operation.input});
           if (outcome === "throw") throw new Error("engine throw");
           if (outcome === "null") return null;
           if (outcome === "rc") return {status:7, stderr:"engine rc"};
@@ -2049,7 +2049,8 @@ console.log("T0934_BOARD_ONCE_OK");
 def test_opencode_thin_plugin_and_core_node_selfcheck(tmp_path):
     assert OPEN_PLUGIN.is_file() and OPEN_CORE.is_file()
     plugin = OPEN_PLUGIN.read_text(encoding="utf-8")
-    assert plugin.count("export const") == 1 and "GitCheckPlugin" in plugin
+    assert "export const" not in plugin
+    assert plugin.count("export default") == 1 and "export default core.GitCheckPlugin;" in plugin
     node = shutil.which("node")
     if node is None:
         pytest.skip("node 없음")
@@ -2061,7 +2062,8 @@ def test_opencode_thin_plugin_and_core_node_selfcheck(tmp_path):
 const m = require("./git-check-core.cjs");
 const assert = require("node:assert");
 const root = process.argv[1];
-assert.strictEqual(typeof m.GitCheckPlugin, "function");
+assert.strictEqual(m.GitCheckPlugin.id, "pm.git-check");
+assert.strictEqual(typeof m.GitCheckPlugin.setup, "function");
 assert.strictEqual(typeof m.makeGitCheckPlugin, "function");
 assert.strictEqual(typeof m.createToolBoundary, "function");
 
@@ -2071,8 +2073,8 @@ function reply(git) {
 }
 
 (async () => {
-  const toasts = [];
   const spawnSync = (_command, _args, options) => {
+    assert.strictEqual(options.cwd, "/repo", "일반 도구 판정은 세션 폴더에서 돈다");
     const request = JSON.parse(options.input);
     const command = request.shell_command;
     return reply({
@@ -2081,44 +2083,40 @@ function reply(git) {
       reason: request.cwd.endsWith("slot") ? "slot fixture" : "home fixture",
     });
   };
+  const session = {get: async ({sessionID}) => ({id: sessionID})};
   const boundary = m.createToolBoundary({
-    root, directory: "/repo", worktree: "/repo", spawnSync,
-    client: {tui: {showToast: async (value) => toasts.push(value)}, session: {get: async ({path}) => ({data: {id: path.id}})}},
-    contextFor: () => null, acceptContext: async () => {},
+    root, directory: "/repo", spawnSync, session, contextFor: () => null, acceptContext: async () => {},
   });
-  await boundary.before({tool:"bash", sessionID:"A"}, {args:{command:"git commit -m a", cwd:"/repo"}});
-  await boundary.before({tool:"bash", sessionID:"B"}, {args:{command:"git commit -m b", cwd:"/repo/slot"}});
-  const a1 = {system: []};
-  boundary.inject({sessionID:"A"}, a1);
+  await boundary.before({tool:"shell", sessionID:"A", input:{command:"git commit -m a", workdir:"/repo"}});
+  await boundary.before({tool:"shell", sessionID:"B", input:{command:"git commit -m b", workdir:"/repo/slot"}});
+  const a1 = {sessionID:"A", system: []};
+  boundary.inject(a1);
   assert.strictEqual(a1.system.length, 1);
-  assert.match(a1.system[0], /home fixture/);
-  const a2 = {system: []};
-  boundary.inject({sessionID:"A"}, a2);
+  assert.strictEqual(a1.system[0].type, "text");
+  assert.match(a1.system[0].text, /home fixture/);
+  const a2 = {sessionID:"A", system: []};
+  boundary.inject(a2);
   assert.strictEqual(a2.system.length, 0);
-  const b1 = {system: []};
-  boundary.inject({sessionID:"B"}, b1);
+  const b1 = {sessionID:"B", system: []};
+  boundary.inject(b1);
   assert.strictEqual(b1.system.length, 1);
-  assert.match(b1.system[0], /slot fixture/);
-  assert.strictEqual(toasts.length, 2);
+  assert.match(b1.system[0].text, /slot fixture/);
   await assert.rejects(
-    boundary.before({tool:"bash", sessionID:"A"}, {args:{command:"git add tests/shared.txt", cwd:"/repo"}}),
+    boundary.before({tool:"shell", sessionID:"A", input:{command:"git add tests/shared.txt", workdir:"/repo"}}),
     /git-check\/deny/
   );
 
-  const errorToasts = [];
   const failing = m.createToolBoundary({
-    root, directory: "/repo", worktree: "/repo", spawnSync: () => { throw new Error("fixture boom"); },
-    client: {tui: {showToast: async (value) => errorToasts.push(value)}, session: {get: async ({path}) => ({data: {id: path.id}})}},
-    contextFor: () => null, acceptContext: async () => {},
+    root, directory: "/repo", spawnSync: () => { throw new Error("fixture boom"); },
+    session, contextFor: () => null, acceptContext: async () => {},
   });
   await assert.rejects(
-    failing.before({tool:"bash", sessionID:"ERR"}, {args:{command:"git add tests/shared.txt", cwd:"/repo"}}),
+    failing.before({tool:"shell", sessionID:"ERR", input:{command:"git add tests/shared.txt", workdir:"/repo"}}),
     /\[git-check\/판정 실패\] .*\(fixture boom\)/,
   );
-  const errorContext = {system: []};
-  failing.inject({sessionID:"ERR"}, errorContext);
+  const errorContext = {sessionID:"ERR", system: []};
+  failing.inject(errorContext);
   assert.strictEqual(errorContext.system.length, 0);
-  assert.strictEqual(errorToasts.length, 0);
   console.log("GIT_CHECK_CORE_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 """
@@ -2128,9 +2126,9 @@ function reply(git) {
 
 
 def test_opencode_git_anchor_blocks_when_engine_absent_at_install_root(tmp_path):
-    """설치 트리에 board.py 가 없으면 경고로 낮추지 않고 `tool.execute.before` 에서 막는다.
+    """설치 트리에 board.py 가 없으면 경고로 낮추지 않고 tool `execute.before` 훅에서 막는다.
 
-    payload `directory` 와 조상(이 저장소)에는 board.py 가 있다 — 그 둘 중 하나로 엔진 루트를
+    세션 폴더(`ctx.location.directory`)와 조상(이 저장소)에는 board.py 가 있다 — 그 둘 중 하나로 엔진 루트를
     잡는 코드라면 판정이 호출돼 통과한다. 자기 설치 트리를 보는 코드만 차단한다. 선필터가 없으므로
     git 이 아닌 명령도 같은 경계를 지나 막힌다. 사용자 허용 입력도 같은 설치 확인을 한다.
     """
@@ -2144,31 +2142,29 @@ def test_opencode_git_anchor_blocks_when_engine_absent_at_install_root(tmp_path)
         shutil.copyfile(OPEN_CORE.parent / name, lib / name)
     assert not (tmp_path / "install" / ".project_manager").exists()
 
-    script = r"""
+    script = FAKE_CONTEXT_JS + r"""
 const assert = require("node:assert");
 const ctx = require("./ctx-guard-core.cjs");
 const git = require("./git-check-core.cjs");
 const repoWithEngine = process.argv[1];
 
 (async () => {
-  const toasts = [];
-  const client = {tui: {showToast: async (value) => toasts.push(value)}, session: {get: async ({path}) => ({data: {id: path.id}})}};
-  const hooks = await ctx.CtxGuardPlugin({directory: repoWithEngine, worktree: repoWithEngine, client});
+  const guard = ctx.createCtxGuard(fakeContext({directory: repoWithEngine}).ctx);
   for (const command of ["echo hello", "git commit -m x"]) {
     await assert.rejects(
-      hooks["tool.execute.before"]({tool:"bash", sessionID:"S"}, {args:{command}}),
+      guard.before(toolEvent("shell", "S", {command})),
       /\[git-check\/판정 실패\] .*board\.py/,
     );
   }
-  const grants = await git.GitCheckPlugin({directory: repoWithEngine, worktree: repoWithEngine, client});
+  const plugin = fakeContext({directory: repoWithEngine});
+  await git.GitCheckPlugin.setup(plugin.ctx);
   await assert.rejects(
-    grants["chat.message"]({sessionID:"S"}, {parts:[{type:"text", text:process.argv[2]}]}),
+    plugin.hooks.session.prompt(promptEvent("S", process.argv[2])),
     /\[git-check\/허용 거부\] .*board\.py/,
   );
-  const context = {system: []};
-  await hooks["experimental.chat.system.transform"]({sessionID:"S"}, context);
+  const context = contextEvent("S");
+  await guard.context(context);
   assert.deepStrictEqual(context.system, [], "차단 대신 경고로 수준이 낮아짐");
-  assert.deepStrictEqual(toasts, [], "차단 대신 toast 로 수준이 낮아짐");
   console.log("GIT_CHECK_INSTALL_BLOCK_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 """
@@ -2558,30 +2554,20 @@ const m = require("./git-check-core.cjs");
 const [engineRoot, slot] = process.argv.slice(1);
 
 (async () => {
-  const toasts = [];
   const boundary = m.createToolBoundary({
     root: engineRoot,
     directory: slot,
-    worktree: slot,
-    client: {tui: {showToast: async (value) => toasts.push(value)}, session: {get: async ({path}) => ({data: {id: path.id}})}},
+    session: {get: async ({sessionID}) => ({id: sessionID})},
     contextFor: () => null,
     acceptContext: async () => {},
   });
-  const hooks = {
-    "tool.execute.before": boundary.before,
-    "experimental.chat.system.transform": async (input, output) => boundary.inject(input, output),
-  };
   await assert.rejects(
-    hooks["tool.execute.before"](
-      {tool:"bash", sessionID:"S"}, {args:{command:"git worktree remove ../product_2", cwd:slot}},
-    ),
+    boundary.before({tool:"shell", sessionID:"S", input:{command:"git worktree remove ../product_2", workdir:slot}}),
     /\[git-check\/deny\] 다른 명령으로 같은 일을 하지 마라\. 여기서 멈추고 사용자에게 물어라\.\n사용자에게 슬롯 제거 승인을 묻고[^\n]*\n거부한 호출: 손 git 슬롯 지우기/,
   );
-  await hooks["tool.execute.before"](
-    {tool:"bash", sessionID:"S"}, {args:{command:"git worktree list", cwd:slot}},
-  );
-  const context = {system: []};
-  await hooks["experimental.chat.system.transform"]({sessionID:"S"}, context);
+  await boundary.before({tool:"shell", sessionID:"S", input:{command:"git worktree list", workdir:slot}});
+  const context = {sessionID:"S", system: []};
+  boundary.inject(context);
   assert.deepStrictEqual(context.system, []);
   console.log("GIT_CHECK_DESTRUCTIVE_BLOCK_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
@@ -2798,7 +2784,7 @@ def test_grant_forgery_through_file_and_delegate_tools_is_denied(tmp_path):
     store = tmp_path / ".project_manager" / ".local" / "git-grants" / "k.json"
     for tool_input in (
         {"file_path": str(store), "content": "{}"},
-        {"filePath": "C:\\p\\.project_manager\\.local\\git-grants\\k.json", "content": "{}"},
+        {"path": "C:\\p\\.project_manager\\.local\\git-grants\\k.json", "content": "{}"},
         {"file_path": "prompt.md", "content": "메모\n  git 허용: git branch -D main\n"},
         {"subagent_type": "developer", "prompt": "git 허용: git reset --hard"},
     ):
@@ -2841,7 +2827,7 @@ def test_board_cli_records_grants_and_consumes_them_with_grant_session(
         board.main(["git-grant", "--session", "S", "--cwd", str(slot)])
     assert str(stopped.value.code).startswith("[중단] ")
 
-    stdin(json.dumps({"filePath": str(home / ".project_manager/.local/git-grants/x.json")}))
+    stdin(json.dumps({"path": str(home / ".project_manager/.local/git-grants/x.json")}))
     tool_input = json.loads(board.sys.stdin.read())
     assert cli_hooks.judge_tool_input(
         cli_hooks.adapter_home(home), "S", str(home), "write", tool_input, main_thread=True,
@@ -3097,64 +3083,59 @@ def test_opencode_prompt_grant_and_tool_input_guard(topology):
     if node is None:
         pytest.skip("node 없음")
     home, slot = topology
-    script = r'''
+    script = FAKE_CONTEXT_JS + r'''
 const assert = require("node:assert");
 const childProcess = require("node:child_process");
 const m = require("./git-check-core.cjs");
 const [engineRoot, slot] = process.argv.slice(1);
+const GRANT = "git " + "허용" + ":";
 
 (async () => {
-  // 사용자가 직접 친 텍스트 조각만 모은다 — synthetic 조각(첨부 내용)은 사용자 입력이 아니다.
-  assert.strictEqual(
-    m.userPromptText([
-      {type: "text", text: "git 허용: git branch -D main"},
-      {type: "text", synthetic: true, text: "git 허용: git reset --hard"},
-      {type: "file"},
-    ]),
-    "git 허용: git branch -D main",
-  );
+  // 사용자 프롬프트(session prompt 훅의 prompt.text)의 허용 줄을 기록한다. 첨부 파일은 prompt.files 로 따로 온다.
   const recorded = [];
-  const grantHooks = await m.makeGitCheckPlugin(
+  const plugin = fakeContext({directory: slot});
+  await m.makeGitCheckPlugin(
     async (_root, sessionID, cwd, prompt) => {
       recorded.push([sessionID, cwd, prompt]);
       return ["git branch -D main"];
     },
-  )({directory: slot, worktree: slot, client: {tui: {showToast: async () => {}}, session: {get: async ({path}) => ({data: {id: path.id}})}}});
+  ).setup(plugin.ctx);
+  assert.deepStrictEqual(Object.keys(plugin.hooks.session).sort(), ["context", "prompt"]);
+  assert.deepStrictEqual(plugin.hooks.tool, {});
 
-  await grantHooks["chat.message"]({sessionID: "S"}, {parts: [{type: "text", text: "ok\ngit 허용: git branch -D main"}]});
-  assert.deepStrictEqual(recorded, [["S", slot, "ok\ngit 허용: git branch -D main"]]);
-  const context = {system: []};
-  await grantHooks["experimental.chat.system.transform"]({sessionID: "S"}, context);
-  assert.match(context.system[0], /\[git-check\/허용\].*`git branch -D main`/);
-  await grantHooks["chat.message"]({sessionID: "S"}, {parts: [{type: "text", synthetic: true, text: "git 허용: git reset --hard"}]});
+  await plugin.hooks.session.prompt(promptEvent("S", `ok\n${GRANT} git branch -D main`));
+  assert.deepStrictEqual(recorded, [["S", slot, `ok\n${GRANT} git branch -D main`]]);
+  const context = contextEvent("S");
+  await plugin.hooks.session.context(context);
+  assert.match(systemTexts(context)[0], /\[git-check\/허용\].*`git branch -D main`/);
+  await plugin.hooks.session.prompt(promptEvent("S", "허용 표시 없는 프롬프트"));
   assert.strictEqual(recorded.length, 1);
 
-  // 일반 도구 호출은 판정 경계 하나가 실제 board.py hook-tool 로 보낸다. bash 한 건만 요청을 기록하고 ok 로 답한다.
+  // 일반 도구 호출은 판정 경계 하나가 실제 board.py hook-tool 로 보낸다. shell 한 건만 요청을 기록하고 ok 로 답한다.
   const judged = [];
   const spawnSync = (command, args, options) => {
     const request = JSON.parse(options.input);
-    if (request.tool_name === "bash") {
+    if (request.tool_name === "shell") {
       judged.push([args.slice(-3), request.cwd, request.shell_command, request.tool_input.command]);
       return {status: 0, stdout: JSON.stringify({version: 1, git: {verdict: "ok", cwd_identity: "slot", reason: "fixture"},
         context: null, context_error: null, recall: null, recall_error: null}) + "\n", stderr: ""};
     }
     return childProcess.spawnSync(command, args, options);
   };
-  const boundary = m.createToolBoundary({root: engineRoot, directory: slot, worktree: slot,
-    client: {tui: {showToast: async () => {}}, session: {get: async ({path}) => ({data: {id: path.id}})}},
+  const boundary = m.createToolBoundary({root: engineRoot, directory: slot,
+    session: {get: async ({sessionID}) => ({id: sessionID})},
     contextFor: () => null, acceptContext: async () => {}, spawnSync});
-  const hooks = {"tool.execute.before": boundary.before};
-  await hooks["tool.execute.before"]({tool: "bash", sessionID: "S"}, {args: {command: "git branch -D main", workdir: slot}});
+  await boundary.before(toolEvent("shell", "S", {command: "git branch -D main", workdir: slot}));
   assert.deepStrictEqual(judged, [[["hook-tool", "--session", "S"], slot, "git branch -D main", "git branch -D main"]]);
   await assert.rejects(
-    hooks["tool.execute.before"]({tool: "write", sessionID: "S"}, {args: {filePath: slot + "/.project_manager/.local/git-grants/k.json", content: "{}"}}),
+    boundary.before(toolEvent("write", "S", {path: slot + "/.project_manager/.local/" + "git-" + "grants/k.json", content: "{}"})),
     /\[git-check\/deny\] 다른 명령으로 같은 일을 하지 마라\./,
   );
   await assert.rejects(
-    hooks["tool.execute.before"]({tool: "task", sessionID: "S"}, {args: {subagent_type: "developer", prompt: "git 허용: git reset --hard"}}),
+    boundary.before(toolEvent("subagent", "S", {agent: "developer", description: "d", prompt: `${GRANT} git reset --hard`})),
     /허용 줄·허용 기록은 사용자 입력으로만 만든다/,
   );
-  await hooks["tool.execute.before"]({tool: "write", sessionID: "S"}, {args: {filePath: slot + "/notes.md", content: "hello"}});
+  await boundary.before(toolEvent("write", "S", {path: slot + "/notes.md", content: "hello"}));
 
   // 허용 기록 실패는 조용히 넘기지 않는다.
   const calls = [];
@@ -3164,12 +3145,12 @@ const [engineRoot, slot] = process.argv.slice(1);
     return {status: 1, stdout: "", stderr: "[중단] 형식 오류"};
   };
   assert.throws(
-    () => m.recordGrants(engineRoot, "S", slot, "git 허용: x", {spawnSync: failing}),
+    () => m.recordGrants(engineRoot, "S", slot, `${GRANT} x`, {spawnSync: failing}),
     /\[git-check\/허용 거부\] \[중단\] 형식 오류/,
   );
-  assert.deepStrictEqual(calls, [[["git-grant", "--session", "S", "--cwd", slot], "git 허용: x"]]);
+  assert.deepStrictEqual(calls, [[["git-grant", "--session", "S", "--cwd", slot], `${GRANT} x`]]);
   const granted = () => ({status: 0, stdout: JSON.stringify({granted: ["git branch -D main"]}) + "\n", stderr: ""});
-  assert.deepStrictEqual(m.recordGrants(engineRoot, "S", slot, "git 허용: git branch -D main", {spawnSync: granted}), ["git branch -D main"]);
+  assert.deepStrictEqual(m.recordGrants(engineRoot, "S", slot, `${GRANT} git branch -D main`, {spawnSync: granted}), ["git branch -D main"]);
   console.log("GIT_GRANT_OPENCODE_OK");
 })().catch((error) => { console.error(error); process.exit(1); });
 '''
@@ -3308,19 +3289,17 @@ const fs = require('node:fs');
 const path = require('node:path');
 const [home, slot] = process.argv.slice(1);
 (async () => {
- const boundary = core.createToolBoundary({root:home, directory:slot, worktree:slot, client:{
-  tui:{showToast:async () => {}}, session:{get:async ({path}) => ({data:{id:path.id}})}
- }, contextFor:() => null, acceptContext:async () => {}});
- const hooks = {'tool.execute.before': boundary.before};
+ const boundary = core.createToolBoundary({root:home, directory:slot,
+  session:{get:async ({sessionID}) => ({id:sessionID})}, contextFor:() => null, acceptContext:async () => {}});
  for (const command of ['git sparse-checkout set src', 'git submodule --quiet update -- status'])
-  await assert.rejects(hooks['tool.execute.before']({tool:'bash',sessionID:'S'},{args:{command,cwd:slot}}), /git-check\/deny/);
+  await assert.rejects(boundary.before({tool:'shell',sessionID:'S',input:{command,workdir:slot}}), /git-check\/deny/);
  for (const command of ['git sparse-checkout list', 'git submodule'])
-  await hooks['tool.execute.before']({tool:'bash',sessionID:'S'},{args:{command,cwd:slot}});
+  await boundary.before({tool:'shell',sessionID:'S',input:{command,workdir:slot}});
  const file = path.join(home,'.project_manager','.local','worktree-leases.json');
  const data = JSON.parse(fs.readFileSync(file,'utf8'));
  Object.assign(data.leases[0], {session:'t1',role:'work',state:'leased'});
  fs.writeFileSync(file,JSON.stringify(data));
- await hooks['tool.execute.before']({tool:'bash',sessionID:'S'},{args:{command:'git sparse-checkout add src',cwd:slot}});
+ await boundary.before({tool:'shell',sessionID:'S',input:{command:'git sparse-checkout add src',workdir:slot}});
  console.log('T0931_HOOK_OK');
 })().catch(error => { console.error(error); process.exitCode=1; });
 '''
@@ -3428,11 +3407,9 @@ const assert = require('node:assert');
 const core = require('./git-check-core.cjs');
 const [home, slot, session, command, denied] = process.argv.slice(1);
 (async () => {
- const boundary = core.createToolBoundary({root:home, directory:slot, worktree:slot, client:{
-  tui:{showToast:async () => {}}, session:{get:async ({path}) => ({data:{id:path.id}})}
- }, contextFor:() => null, acceptContext:async () => {}});
- const hooks = {'tool.execute.before': boundary.before};
- const run = () => hooks['tool.execute.before']({tool:'bash',sessionID:session},{args:{command,cwd:slot}});
+ const boundary = core.createToolBoundary({root:home, directory:slot,
+  session:{get:async ({sessionID}) => ({id:sessionID})}, contextFor:() => null, acceptContext:async () => {}});
+ const run = () => boundary.before({tool:'shell',sessionID:session,input:{command,workdir:slot}});
  if (denied === 'true') await assert.rejects(run(), /git-check\/deny/);
  else await run();
  console.log('T0931_FOREACH_HOOK_OK');
@@ -3843,7 +3820,7 @@ def test_three_harness_hooks_judge_git_status_on_repositories_no_pm_home_declare
         out = io.StringIO()
         assert dispatcher.run_git_target_repo_hook(home, stdin=io.StringIO(json.dumps(payload)), stdout=out) == 0
         assert out.getvalue() == "{}\n", label
-        request = {"version": 1, "cwd": str(home), "tool_name": "bash", "tool_input": {"command": command},
+        request = {"version": 1, "cwd": str(home), "tool_name": "shell", "tool_input": {"command": command},
                    "shell_command": command, "shell": "bash", "main_thread": True, "context": None,
                    "recall": None}
         result = subprocess.run(

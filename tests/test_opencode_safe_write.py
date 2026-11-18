@@ -42,7 +42,7 @@ OPENCODE = REPO / "templates" / "opencode" / ".opencode"
 
 PROJECT_CONFIG = OPENCODE / "opencode.jsonc"
 PLUGIN_DIR = OPENCODE / "plugins"
-PLUGIN_FILE = PLUGIN_DIR / "safe-write.js"  # ESM 진입점 shim (opencode autoload 대상).
+PLUGIN_FILE = PLUGIN_DIR / "safe-write.js"  # 퇴역한 진입 파일 자리(opencode 2.x 미적재).
 CORE_DIR = OPENCODE / "lib"
 CORE_FILE = CORE_DIR / "safe-write-core.cjs"  # 순수 로직·팩토리 본체 (CJS·node require 대상).
 
@@ -69,59 +69,13 @@ def _core_src() -> str:
     return CORE_FILE.read_text(encoding="utf-8")
 
 
-def _shim_src() -> str:
-    return PLUGIN_FILE.read_text(encoding="utf-8")
-
-
 # ── 1. 파일 존재 + ESM 로드 규약 ─────────────────────────────────────────────
 
-def test_safe_write_files_exist():
-    """진입점 shim 이 .opencode/plugins/ 에·core 모듈이 .opencode/lib/ 에 존재 (T-0283 분리 규약)."""
-    assert PLUGIN_DIR.is_dir(), f"plugin 디렉토리 없음: {PLUGIN_DIR}"
-    assert PLUGIN_FILE.exists(), f"safe-write 진입점 shim 없음: {PLUGIN_FILE}"
-    assert CORE_DIR.is_dir(), f"core lib 디렉토리 없음: {CORE_DIR}"
+def test_safe_write_core_stays_and_entry_is_retired():
+    """진입 파일은 opencode 2.x 가 적재하지 못해 출하 트리에서 빠졌다(설치본은 갱신 때 퇴역 지시로 옮긴다).
+    core 모듈은 처분 결정까지 .opencode/lib/ 에 남는다."""
+    assert not PLUGIN_FILE.exists(), f"퇴역한 safe-write 진입 파일이 남음: {PLUGIN_FILE}"
     assert CORE_FILE.exists(), f"safe-write core 모듈 없음: {CORE_FILE}"
-
-
-def test_safe_write_entry_is_esm_single_function_export():
-    """opencode 로드 규약(실측 T-0283): 진입점은 ESM 으로 팩토리 하나만 export 하는 shim 이다.
-
-    durable 정적 가드: 진입점이 (1) CJS module.exports 를 쓰지 않고 (2) core 를 import 하며
-    (3) 정확히 하나의 export 문(팩토리 SafeWritePlugin)만 갖는다 (상수/헬퍼 export 금지).
-    """
-    shim = _shim_src()
-    code = "\n".join(ln for ln in shim.splitlines() if not ln.lstrip().startswith("//"))
-    assert "module.exports" not in code, (
-        "진입점이 CJS module.exports 사용 (T-0283 회귀 — opencode 가 함수 아니라며 로드 거부)"
-    )
-    assert re.search(r'import\s+core\s+from\s+["\']\.\./lib/safe-write-core\.cjs["\']', shim), (
-        "진입점이 ../lib/safe-write-core.cjs 를 import 하지 않음"
-    )
-    export_lines = [ln for ln in shim.splitlines() if re.match(r"\s*export\s", ln)]
-    assert len(export_lines) == 1, (
-        f"진입점 export 문이 정확히 1개가 아님(팩토리 하나만·상수/헬퍼 export 금지): {export_lines}"
-    )
-    assert "SafeWritePlugin" in export_lines[0], (
-        f"진입점의 단일 export 가 SafeWritePlugin 팩토리가 아님: {export_lines[0]!r}"
-    )
-
-
-def test_shim_injects_tool_helper_and_core_stays_pure():
-    """custom tool 헬퍼는 shim 에서 import·주입하고, core 는 @opencode-ai/plugin 을 직접 require 안 함.
-
-    core 가 그 패키지를 require 하면 node 자가검증(plain node·그 패키지 미설치)이 깨진다. 그래서
-    shim 이 `import { tool } from "@opencode-ai/plugin"` 후 makeSafeWritePlugin(tool) 로 주입한다.
-    """
-    shim = _shim_src()
-    core = _core_src()
-    assert re.search(r'import\s*\{\s*tool\s*\}\s*from\s*["\']@opencode-ai/plugin["\']', shim), (
-        "shim 이 @opencode-ai/plugin 에서 tool 을 import 하지 않음"
-    )
-    assert "makeSafeWritePlugin(tool)" in shim, "shim 이 makeSafeWritePlugin(tool) 로 주입하지 않음"
-    # core 는 그 패키지를 *require/import* 하지 않는다 (주석 언급은 허용 — 실 구문만 검사).
-    assert not re.search(r'(?:require|import)\s*\(?\s*["\']@opencode-ai/plugin["\']', core), (
-        "core 가 @opencode-ai/plugin 을 직접 require/import — node 자가검증 깨짐(주입 규약 위반)"
-    )
 
 
 def test_ctx_guard_untouched_by_safe_write():
