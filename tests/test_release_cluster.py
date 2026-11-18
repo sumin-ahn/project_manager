@@ -362,6 +362,10 @@ def _run_opencode_live(argv, *, cwd, env, timeout):
 _CLUSTER_BOOTSTRAP_COMMAND = f"python3 .project_manager/tools/pm_bootstrap.py --task {_CLUSTER_TASK}"
 
 
+# 하네스별 네이티브 위임 도구 이름. 지시문은 그 하네스에 실제로 있는 도구만 부르게 한다.
+_NATIVE_DELEGATION_TOOL = {"claude": "Task", "codex": "spawn_agent", "opencode": "subagent"}
+
+
 def _full_cluster_prompt(entry_doc: str, harness: str) -> str:
     """PM 세션이 고정 4회 위임과 native 라운드 파일 왕복을 운영하라는 프롬프트.
 
@@ -410,7 +414,7 @@ def _full_cluster_prompt(entry_doc: str, harness: str) -> str:
         f"```{_PM_REVIEW_BLOCK}\n{zero_review_payload}\n```\n\n"
         f"{_GROWTH_PIPELINE[2][1]}\n"
     )
-    delegation_tool = "spawn_agent" if harness == "codex" else "Task"
+    delegation_tool = _NATIVE_DELEGATION_TOOL[harness]
     return (
         f"You are the PM for this project. Read {entry_doc} to learn how the project board "
         "tool works. First, in this main session and before any other board command or delegation, open "
@@ -1741,14 +1745,17 @@ def test_full_cluster_prompt_requires_exact_native_task_sequence():
 
 
 def test_full_cluster_prompt_uses_each_harness_native_delegation_tool():
-    """Claude/OpenCode는 Task, Codex는 존재하는 spawn_agent만 지시한다."""
+    """지시문은 그 하네스에 있는 위임 도구만 부른다(Claude Task · Codex spawn_agent · opencode subagent)."""
     claude = _full_cluster_prompt("CLAUDE.md", "claude")
     opencode = _full_cluster_prompt("AGENTS.md", "opencode")
     codex = _full_cluster_prompt("AGENTS.md", "codex")
 
-    for prompt in (claude, opencode):
-        assert "Call native Task exactly four times" in prompt
-        assert "spawn_agent" not in prompt
+    assert "Call native Task exactly four times" in claude
+    assert "spawn_agent" not in claude
+    assert "Call native subagent exactly four times" in opencode
+    assert "next subagent" in opencode
+    assert "code-reviewer subagent" in opencode
+    assert "Task" not in opencode and "spawn_agent" not in opencode
     assert "Call native spawn_agent exactly four times" in codex
     assert "next spawn_agent" in codex
     assert "code-reviewer spawn_agent" in codex
@@ -2024,8 +2031,8 @@ def test_cluster_session_task_assertion_needs_exactly_one_cluster_row(tmp_path):
 
 def test_full_cluster_prompt_opens_the_cluster_task_before_any_delegation():
     """세 하네스 전체 묶음 시험 프롬프트가 주 세션 부트스트랩을 첫 위임·티켓 발행보다 먼저 한 번 지시한다."""
-    for entry_doc, harness, tool in (("CLAUDE.md", "claude", "Task"), ("AGENTS.md", "codex", "spawn_agent"),
-                                     ("AGENTS.md", "opencode", "Task")):
+    for entry_doc, harness in (("CLAUDE.md", "claude"), ("AGENTS.md", "codex"), ("AGENTS.md", "opencode")):
+        tool = _NATIVE_DELEGATION_TOOL[harness]
         prompt = _full_cluster_prompt(entry_doc, harness)
         command = "python3 .project_manager/tools/pm_bootstrap.py --task cluster"
         assert prompt.count(command) == 1, harness
