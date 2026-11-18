@@ -7518,6 +7518,31 @@ def test_check_snapshot_retirement_is_declared_in_every_manifest(pm_update, tmp_
     assert _CHECK_SNAPSHOT_OLD in retired_paths.declared_retired_olds(shipped["manifests"])
 
 
+_STALL_WATCHDOG_FILES = (".opencode/plugins/stall-watchdog.js", ".opencode/lib/stall-watchdog-core.cjs")
+
+
+def test_update_moves_removed_stall_watchdog_plugin_out_of_an_opencode_install(tmp_path, monkeypatch):
+    """지운 stall-watchdog 플러그인의 두 파일이 남은 opencode 설치본은 갱신 한 번으로 두 파일을 잃는다.
+
+    손으로 고친 사본도 옮긴다. 원래 바이트는 백업 폴더(`.pm_import_backups/<날짜>/`)에 남고 나머지 플러그인은 그대로다."""
+    monkeypatch.setattr(import_fill, "_real_models_runner", lambda source: (False, []))
+    dest = tmp_path / "adopter"
+    _import_adopter(dest, "opencode")
+    for rel in _STALL_WATCHDOG_FILES:
+        (dest / rel).write_text(f"// 손으로 고친 옛 사본 {rel}\n", encoding="utf-8")
+
+    run = _adopter_update(dest)
+
+    assert run.returncode == 0, run.stdout + run.stderr
+    for rel in _STALL_WATCHDOG_FILES:
+        assert not (dest / rel).exists(), rel
+        assert f"[퇴역] {rel} ->" in run.stdout, run.stdout
+        backups = sorted((dest / ".pm_import_backups").glob(f"*/{rel}"))
+        assert [path.read_text(encoding="utf-8") for path in backups] == [f"// 손으로 고친 옛 사본 {rel}\n"]
+    assert sorted(path.name for path in (dest / ".opencode" / "plugins").glob("*.js")) == [
+        "ctx-guard.js", "delegate-channel.js", "git-check.js", "principle-recall.js", "safe-write.js"]
+
+
 # ── T-0951 갱신 절차 전환 — 전달 프로세스(엔진 코드만)와 완료 프로세스(나머지) ──────────────────────
 # 합성 상류: 엔진 코드 1행(`zz_engine_probe.py`)과 엔진 코드 밖 디렉터리 행(`adapterdir`).
 _T0951_PROBE = ".project_manager/tools/zz_engine_probe.py"

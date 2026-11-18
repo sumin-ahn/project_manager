@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "count": 337,
+  "count": 336,
   "paths": {
     ".claude/agents/code-reviewer.md": [
       {
@@ -1271,13 +1271,6 @@
       {
         "kind": "session_stamp",
         "hash": "7480ac4f2b224593a64a50b322b0fcb01ba18b12dff4e1408149d236f38fdecb",
-        "count": 1
-      }
-    ],
-    "templates/opencode/.opencode/lib/stall-watchdog-core.cjs": [
-      {
-        "kind": "session_stamp",
-        "hash": "b5a2bdba834cf46440ef896798ae6a7dfb84ae131427724c8d03aad4da30e7ce",
         "count": 1
       }
     ],

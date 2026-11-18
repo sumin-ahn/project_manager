@@ -42,9 +42,7 @@ SELF_LOCATED_CORES = (
     "templates/opencode/.opencode/lib/git-check-core.cjs",
     "templates/opencode/.opencode/lib/principle-recall-core.cjs",
     "templates/opencode/.opencode/lib/delegate-channel-core.cjs",
-    "templates/opencode/.opencode/lib/stall-watchdog-core.cjs",
     "templates/opencode/.opencode/lib/ctx-guard-core.cjs",
-    ".opencode/lib/stall-watchdog-core.cjs",
 )
 ENGINE_ROOT_DECLARATION = 'const ENGINE_ROOT = path.resolve(__dirname, "..", "..");'
 # 엔진 경로를 조립하는 base 식별자 — 두 번째 인자가 ".project_manager" 리터럴이거나 모듈 상수
@@ -329,7 +327,7 @@ def test_opencode_hook_cores_have_no_ancestor_engine_root_search():
         assert ENGINE_ROOT_DECLARATION in source, f"자기 위치 엔진 루트 선언 없음: {core}"
         bases = set(ENGINE_PATH_BASE_RE.findall(source))
         # 추출 0건은 통과가 아니라 **무구속**이다 — 그 파일은 이 단언이 놓치는 곳에 있다.
-        # 6파일 전부가 엔진 경로를 실제로 조립하므로 공집합이면 추출기가 그 문법을 놓친 것이다.
+        # 4파일 전부가 엔진 경로를 실제로 조립하므로 공집합이면 추출기가 그 문법을 놓친 것이다.
         assert bases, (
             f"엔진 경로 base 추출 0건 — 이 파일이 검사에서 빠졌다: {core}. "
             "ENGINE_PATH_BASE_RE 가 이 파일의 경로 조립 문법을 못 읽는다."

@@ -122,6 +122,10 @@
 #   새 파일은 @source 폴더 행 아래라 새 경로로 쓸 수 없어, 같은 판정을 하는 엔진 cli/hooks.py 를 기준 파일로 둔다.
 # pm-retired-path: .opencode/plugins/git-anchor.js -> .project_manager/tools/pm_engine/cli/hooks.py
 # pm-retired-path: .opencode/lib/git-anchor-core.cjs -> .project_manager/tools/pm_engine/cli/hooks.py
+# OpenCode stall-watchdog 플러그인 삭제: 옛 두 파일을 갱신 때 백업 폴더로 옮긴다. 대신할 파일이 없어
+#   OpenCode 플러그인 훅을 판정하는 엔진 cli/hooks.py 를 기준 파일로 둔다(git-anchor 와 같은 기준 파일).
+# pm-retired-path: .opencode/plugins/stall-watchdog.js -> .project_manager/tools/pm_engine/cli/hooks.py
+# pm-retired-path: .opencode/lib/stall-watchdog-core.cjs -> .project_manager/tools/pm_engine/cli/hooks.py
 # pm_principles: 판단 원칙 레지스트리 로더 + recall 판정. 출하층 `wiki/pm_principles.md`
 #   와 PM 홈 로컬층 `wiki/pm_principles.local.md`(미출하·manifest 미등재)를 합성해 세 어댑터가
 #   공유하는 `judge_recall` 하나로 판정한다. stdlib-only. 신설 도구라 등록 필수(미등록=전파 안 됨).
