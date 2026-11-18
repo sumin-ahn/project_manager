@@ -874,14 +874,16 @@ def _windows_dispatcher_argv(event: str) -> list[str]:
 
     PowerShell 이 없는 호스트에서도 그 커맨드가 넘기는 argv 자체는 그대로 실행할 수 있다.
     인터프리터 해소 래퍼(프로브 루프·대체 분기)는 `test_codex_ctx_guard` 의 정적 파서가 따로
-    고정하므로, 여기서 보는 것은 판정 불능 막는 응답이 그 호출로 실제 나오는가다."""
+    고정하므로, 여기서 보는 것은 판정 불능 막는 응답이 그 호출로 실제 나오는가다.
+    PreToolUse 는 세션 폴더에서 위로 올라가며 찾은 디스패처 경로(`$disp`)를 넘긴다. 이 시험들은 설치
+    루트에서 돌므로 그 값은 `.codex/pm_orch_codex.py` 다(올라가며 찾는 길은 POSIX 시험이 실행으로 본다)."""
     windows = _entry_handler(event)["commandWindows"]
     invocations = [segment for segment in powershell_native_arguments(windows)
                    if f"--hook-dispatch {event}" in segment]
     assert len(invocations) == 1, (event, invocations)
     tokens = shlex.split(invocations[0])
     assert tokens[:2] == ["&", "$py"], tokens
-    return [sys.executable, *tokens[2:]]
+    return [sys.executable, *(DISPATCHER_REL if token == "$disp" else token for token in tokens[2:])]
 
 
 def _run_shipped_command(event: str, root: Path, payload_text: str, *,
@@ -1066,6 +1068,64 @@ def test_pretooluse_wrapper_blocks_without_python_or_dispatcher(dispatcher, tmp_
             timeout=_entry_handler("PreToolUse")["timeout"] + 5)
         assert completed.returncode == 0, (label, completed.stderr)
         assert completed.stdout == expected_stdout, label
+
+
+def _run_pretooluse_wrapper(cwd: Path, payload: dict) -> str:
+    """출하 PreToolUse POSIX 래퍼를 `cwd` 에서 돌려 stdout 을 돌려준다(Codex 가 세션 폴더에서 띄우는 것과 같다)."""
+    completed = subprocess.run(
+        ["bash", "-c", _entry_handler("PreToolUse")["command"]], cwd=cwd,
+        input=json.dumps({**payload, "cwd": str(cwd)}), text=True, capture_output=True,
+        timeout=_entry_handler("PreToolUse")["timeout"] + 5)
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout
+
+
+@pytest.mark.skipif(not posix_bash_supported(),
+                    reason="POSIX bash wrapper 실행 환경이 아님")
+def test_pretooluse_wrapper_finds_the_dispatcher_from_a_session_subfolder(tmp_path):
+    """프로젝트 하위 폴더에서 연 세션의 PreToolUse 래퍼는 위로 올라가며 디스패처를 찾아 판정을 받는다.
+
+    Codex 는 하위 폴더 세션에서도 프로젝트 루트(`.git` 이 있는 폴더)의 `hooks.json` 을 싣고 훅을 세션 폴더에서
+    띄운다. 판정은 루트에서 연 세션과 같은 바이트다(위임을 꺼 둔 설치의 spawn 거부, Bash 통과)."""
+    root = _adopter_tree(tmp_path, conf_lines=("delegate.enabled=false",))
+    (root / ".git").mkdir()
+    sub = root / "a" / "b"
+    sub.mkdir(parents=True)
+    spawn = {"hook_event_name": "PreToolUse", "tool_name": "spawn_agent",
+             "tool_input": {"message": "m", "agent_type": "developer"}}
+    bash = {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "echo ok"}}
+
+    denied = _run_pretooluse_wrapper(sub, spawn)
+    passed = _run_pretooluse_wrapper(sub, bash)
+
+    envelope = json.loads(denied)
+    assert set(envelope) == set(delegate_channel_rules.CODEX_DENY_ENVELOPE_KEYS)
+    assert envelope["reason"].startswith("[delegate-channel/deny] "), envelope["reason"]
+    assert json.loads(passed) == {}
+    assert denied == _run_pretooluse_wrapper(root, spawn)
+    assert passed == _run_pretooluse_wrapper(root, bash)
+
+
+@pytest.mark.skipif(not posix_bash_supported(),
+                    reason="POSIX bash wrapper 실행 환경이 아님")
+def test_pretooluse_wrapper_blocks_when_no_dispatcher_up_to_the_project_root(dispatcher, tmp_path):
+    """세션 폴더에서 `.git` 이 있는 폴더까지 디스패처가 없으면 PreToolUse 래퍼는 그 호출을 막는다.
+
+    더 위에 다른 설치의 디스패처가 있어도 쓰지 않는다. Codex 도 그 폴더 위의 `hooks.json` 을 싣지 않는다.
+    .git 없이 파일시스템 루트까지 올라가도 멈추고 막는다."""
+    outer = _adopter_tree(tmp_path, conf_lines=("delegate.enabled=false",))
+    project = outer / "inner"
+    (project / ".git").mkdir(parents=True)
+    (project / ".codex").mkdir()
+    session = project / "x"
+    session.mkdir()
+    expected = _pretooluse_wrapper_fallback(dispatcher, "command") + "\n"
+
+    for cwd in (project, session, Path("/")):
+        for payload in (_spawn_payload(),
+                        {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                         "tool_input": {"command": "echo ok"}}):
+            assert _run_pretooluse_wrapper(cwd, payload) == expected, (cwd, payload["tool_name"])
 
 
 # 코드로만 얹는 가드 한 건 — "이후 기능은 registry 한 줄" 이라는 이 등록 방식의 주장 그대로다.

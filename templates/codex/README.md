@@ -108,11 +108,14 @@ SubagentStart 관측, 압축 checkpoint·안내·snapshot이 전부 그 registry
 알린다(advisory — 훅을 의도적으로 끈 채택자를 차단하지 않는다). 자식 가드가 못 답하거나 설치된
 디스패처가 옛 버전이어도 훅은 rc0 + 완전한 엔벨로프로 끝난다. `PreToolUse` 기능이 판정을 내지 못하면
 그 도구 호출은 `[hook-dispatch/판정 실패]` 로 막힌다. 디스패처를 돌리지 못한 경우(Python 실행기 없음·
-디스패처 비정상 종료)도 `PreToolUse` 래퍼가 같은 문구로 그 호출을 막는다. 이때는 Codex 안의 Bash·
+디스패처 비정상 종료)도 `PreToolUse` 래퍼가 같은 문구로 그 호출을 막는다. `PreToolUse` 래퍼는 디스패처를
+세션 폴더에서 `.git` 이 있는 가장 가까운 폴더까지 위로 올라가며 찾으므로, 프로젝트 하위 폴더에서 연 세션도
+판정을 받는다. 그 사이에 디스패처가 없으면 디스패처를 돌리지 못한 경우로 막는다. 이때는 Codex 안의 Bash·
 apply_patch·spawn 이 모두 막히므로 Codex 밖 터미널에서 `python3 .codex/pm_orch_codex.py --hook-features` 로
 원인을 보고, Python 3.11 이상을 PATH 에 두거나 `pm_update` 로 디스패처를 다시 받는다. 그 밖의 이벤트는 도구
 호출을 판정하지 않으므로 기능 실패와 디스패처를 돌리지 못한 경우 모두 `adapter-fallback` 마커를 단 경고를
-남기고 진행한다.
+남기고 진행한다. 그 밖의 이벤트 래퍼는 세션 폴더의 `.codex/pm_orch_codex.py` 만 부르므로 하위 폴더에서 연
+세션에서는 이 경고를 남긴다.
 
 진입점 밖에 남은 이벤트는 없다. 열린 matcher 범위 안에서 두 번째 기능을 얹을 때는
 `.codex/hooks.json`과 `/hooks` 재승인이 다시 필요하지 않다.
@@ -193,7 +196,9 @@ import/add-harness 직후 1회 수동으로 밟는다:
 
 ## PM 시작
 
-trust 2단계를 마쳤으면 프로젝트 루트에서 codex 를 연다 — 그 세션이 곧 PM 이다.
+trust 2단계를 마쳤으면 프로젝트 루트에서 codex 를 연다 — 그 세션이 곧 PM 이다. 하위 폴더에서 연 세션도
+도구 호출 판정(git 명령 검사·위임 채널)은 받지만, 나머지 다섯 이벤트의 훅(ctx 경고·SubagentStart 관측·
+압축 checkpoint 등)은 디스패처를 찾지 못해 돌지 않는다(§훅 진입점).
 
 ```bash
 codex          # 대화형 — AGENTS.md(공통 코어)를 자동 로드해 그 세션이 PM 으로 부트스트랩
