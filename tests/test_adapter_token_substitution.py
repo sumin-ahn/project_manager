@@ -125,11 +125,28 @@ def imported(pm_import, tmp_path_factory):
     from _manager_home import install_known_ctx_io
     with pytest.MonkeyPatch.context() as patch:
         install_known_ctx_io(patch)
+        # 실제 `opencode models` 를 띄우지 않는다. 띄우면 opencode 가 스위트가 격리한 전역 설정 폴더에
+        # `opencode.jsonc` 를 만들어, 같은 작업자에서 뒤에 도는 격리 확인 시험이 실패한다.
+        patch.setattr(import_fill, "_real_models_runner", lambda source=None: (False, []))
         for harness in HARNESS_ADAPTER_DIRS:
             dest = root / f"adopter-{harness}"
             _import_new(pm_import, dest, harness)
             trees[harness] = dest
     return trees
+
+
+def test_imported_fixture_leaves_the_isolated_opencode_global_dir_empty(imported):
+    """채택자 트리를 만드는 픽스처는 실제 opencode 를 띄우지 않는다.
+
+    실제 opencode 는 한 번 실행되면 전역 설정 폴더에 `opencode.jsonc` 를 만든다. 스위트는 그 폴더를
+    pytest 임시 루트 아래 빈 폴더로 격리하므로, 픽스처가 실제 opencode 를 띄우면 같은 작업자에서 뒤에
+    도는 격리 확인 시험(`test_opencode_global_dir_resolution_and_isolation`)이 실패한다."""
+    import os
+
+    from pm_engine.app import harness_ctx
+
+    global_dir = harness_ctx.opencode_global_config_dir(os.environ, Path.home())
+    assert not any((global_dir / name).exists() for name in harness_ctx.OPENCODE_GLOBAL_CONFIG_NAMES)
 
 
 # ── (a) 하니스 전수 — 채택자 어댑터 트리에 토큰 잔존 0 ────────────────────────
