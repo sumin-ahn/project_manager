@@ -359,15 +359,17 @@ SLOT_WRITE_DELEGATE_TASK_ENV = "PM_DELEGATE_TASK"
 # 파일 쓰기·편집 도구의 대상 경로 입력 키(실측 claude 2.1.272 · opencode 2.3.0).
 _WRITE_TOOL_PATH_KEYS: dict[str, str] = {
     "Write": "file_path", "Edit": "file_path", "NotebookEdit": "notebook_path",
-    "write": "path", "edit": "path",
+    "write": "path", "edit": "path", "experimental_image_generate": "path",
 }
 
 # 패치 본문 도구 이름 → 본문 키: codex `apply_patch` 의 `command`, opencode `patch` 의 `patchText`(실측
 # codex 0.154.0 · opencode 2.3.0). 대상 경로는 본문의 파일 머리 줄에 있다.
 _PATCH_TOOL_TEXT_KEYS: dict[str, str] = {"apply_patch": "command", "patch": "patchText"}
 
+# 머리 줄 앞의 공백(BOM 포함)과 경로 끝의 공백·CR 은 머리 줄·경로가 아니다(opencode 2.x 패치 파서는 줄을
+# trim 한 뒤 머리 줄을 읽는다).
 _PATCH_TARGET_LINE = re.compile(
-    r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+?)[ \t]*$", re.MULTILINE
+    r"^(?:[^\S\n]|\ufeff)*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+?)[^\S\n]*$", re.MULTILINE
 )
 
 # 셸 명령 속 절대경로 — 셸 쓰기 대상은 정적으로 못 정하므로 슬롯을 가리키는지만 본다(경고).

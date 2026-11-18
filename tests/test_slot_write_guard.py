@@ -200,7 +200,7 @@ def test_delegated_session_inherits_the_owner_task_todos(home, tmp_path, monkeyp
 @pytest.mark.parametrize(
     ("tool", "key"),
     [("Write", "file_path"), ("Edit", "file_path"), ("NotebookEdit", "notebook_path"),
-     ("write", "path"), ("edit", "path")],
+     ("write", "path"), ("edit", "path"), ("experimental_image_generate", "path")],
 )
 def test_write_tools_pass_only_in_the_slot_of_the_sessions_task(home, tool, key):
     def judge(session: str, target: Path) -> dict:
@@ -244,6 +244,20 @@ def test_patch_tools_judge_every_file_header(home):
     inside = "*** Begin Patch\n*** Delete File: old.py\n*** End Patch\n"
     assert cli_hooks.judge_tool_input(
         cli_hooks.adapter_home(home), "S-alpha", str(slot_1), "patch", {"patchText": inside}, main_thread=True,
+    )["verdict"] == "ok"
+    # opencode 2.x 패치 파서는 머리 줄 앞의 공백·탭과 줄 끝 CR 을 지우고 읽는다. 엔진도 같은 대상을 본다.
+    for indented in (
+        f"*** Begin Patch\n  *** Add File: {slot_4}/x.py\n+print(1)\n*** End Patch\n",
+        f"*** Begin Patch\n\t*** Delete File: {slot_4}/x.py\n*** End Patch\n",
+        f"*** Begin Patch\r\n*** Add File: {slot_4}/x.py\r\n+print(1)\r\n*** End Patch\r\n",
+    ):
+        assert cli_hooks.judge_tool_input(
+            cli_hooks.adapter_home(home), "S-alpha", str(slot_1), "patch", {"patchText": indented}, main_thread=True,
+        )["verdict"] == "deny", repr(indented)
+    assert hooks._write_tool_targets(str(slot_1), "patch", {"patchText": "  *** Add File: a.py \r\n"}) == [slot_1 / "a.py"]
+    own = "*** Begin Patch\n  *** Add File: new.py\n+x\n\t*** Delete File: old.py\n*** End Patch\n"
+    assert cli_hooks.judge_tool_input(
+        cli_hooks.adapter_home(home), "S-alpha", str(slot_1), "patch", {"patchText": own}, main_thread=True,
     )["verdict"] == "ok"
     # 본문 키는 도구 이름마다 하나다 — 이름과 키가 엇갈린 입력은 대상을 읽지 않는다.
     assert hooks._write_tool_targets(str(slot_1), "apply_patch", {"patchText": moved}) == []

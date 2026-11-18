@@ -7,7 +7,7 @@ importlib 로 직접 로드해 검증한다. 실 canonical 레지스트리 파�
      경계값(빈 파일·CRLF·같은 파일 안 중복·실제 10,000자 임계)도 값으로 확인한다.
   2. 층 합성 — 로컬층이 뒤에 붙고 같은 (on, match) 면 로컬층이 이긴다 · 로컬층 부재(채택자 구성)에서도 출하층만으로 동작.
   3. 비차단·상한 — `judge_recall` 은 어떤 입력에도 예외를 던지지 않고, 매칭 다수 시 상한 안으로 접히며 매칭 수를 값으로 싣는다.
-  4. opencode plugin core 순수함수 자가검증(node) — `require` 성공 + `toolSignal`/`extractPromptText` 값 +
+  4. opencode plugin core 순수함수 자가검증(node) — `require` 성공 + `toolSignal` 의 2.x 도구 이름 값 + `extractPromptText` 미노출 +
      실 subprocess 출력-억제-다시 켜기 사이클 + 파손 경고 출력.
   5. codex 어댑터 — 실 캡처 fixture(`tests/fixtures/codex_0_147_0_live_hook_payloads.json`)로 도구
      이름 매핑·파손 경고·최종 합본 상한을 값으로 확인한다.
