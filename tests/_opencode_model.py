@@ -14,10 +14,15 @@ from pm_engine.domain.jsonc import _mask_jsonc_comments, _strip_jsonc_trailing_c
 SHIPPED_CONFIG = Path(__file__).resolve().parents[1] / "templates" / "opencode" / ".opencode" / "opencode.jsonc"
 
 
+# 출하 설정의 provider 선언(공급자, 모델, 한도). 저장소에 `.opencode/` 가 없는 라이브 위임 시험이 시험 전역
+# 설정 폴더에 옮겨 쓴다.
+SHIPPED_PROVIDERS = json.loads(_strip_jsonc_trailing_commas(_mask_jsonc_comments(
+    SHIPPED_CONFIG.read_text(encoding="utf-8"))))["provider"]
+
+
 def _read_shipped_model() -> tuple[str, str]:
-    document = json.loads(_strip_jsonc_trailing_commas(_mask_jsonc_comments(SHIPPED_CONFIG.read_text(encoding="utf-8"))))
     declared = [(provider, model_id)
-                for provider, body in document["provider"].items() for model_id in body["models"]]
+                for provider, body in SHIPPED_PROVIDERS.items() for model_id in body["models"]]
     if len(declared) != 1:
         raise RuntimeError(f"출하 opencode.jsonc 는 모델을 정확히 1개 선언해야 한다: {declared}")
     return declared[0]
