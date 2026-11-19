@@ -59,7 +59,7 @@ from conftest import (
 from pm_engine.infra import raw_output
 from pm_engine.domain import review_form, review_state
 from pm_engine.app import round_form
-from _opencode_model import SHIPPED_MODEL
+from _opencode_model import SHIPPED_MODEL, SHIPPED_PROVIDERS
 
 REPO = Path(__file__).resolve().parents[1]
 TOOLS = REPO / ".project_manager" / "tools"
@@ -72,7 +72,9 @@ _RELEASE_LIVE = os.environ.get("PM_ORCH_LIVE_RELEASE") == "1"     # release tier
 # 실측 유효)·claude=sonnet 계열 alias·opencode=출하 모델($0).
 CODEX_MODEL = os.environ.get("PM_DELEGATE_LIVE_CODEX_MODEL", "gpt-5.6-terra")
 CLAUDE_MODEL = os.environ.get("PM_DELEGATE_LIVE_CLAUDE_MODEL", "claude-sonnet-4-6")
-# 교차 위임 저장소에는 `.opencode/` 가 없어 이 모델은 머신 전역 OpenCode 설정에 선언돼 있어야 한다.
+# 교차 위임 저장소에는 `.opencode/` 가 없다. opencode 시험은 출하 설정의 provider 선언을 시험 전역 설정 폴더에
+# 쓴다(`_declare_shipped_providers`). 다른 모델로 바꾸면 그 모델은 이 선언, opencode 기본 목록, 저장된 인증만으로
+# 쓸 수 있어야 한다.
 LIVE_MODEL = os.environ.get("PM_DELEGATE_LIVE_MODEL", SHIPPED_MODEL)
 _CODEX_TIMEOUT = int(os.environ.get("PM_DELEGATE_LIVE_CODEX_TIMEOUT", "600"))
 _CLAUDE_TIMEOUT = int(os.environ.get("PM_DELEGATE_LIVE_CLAUDE_TIMEOUT", "600"))
@@ -139,6 +141,14 @@ def _seed_repo(tmp_path: Path) -> tuple[Path, Path]:
         encoding="utf-8",
     )
     return repo, prompt
+
+
+def _declare_shipped_providers() -> None:
+    """출하 설정의 provider 선언을 이 시험의 opencode 전역 설정 폴더(`harness_tmp_path` 가 정한
+    `$XDG_CONFIG_HOME/opencode`)에 쓴다. 위임 자식은 그 폴더를 `XDG_CONFIG_HOME` 으로 받는다."""
+    folder = Path(os.environ["XDG_CONFIG_HOME"]) / "opencode"
+    folder.mkdir()
+    (folder / "opencode.json").write_text(json.dumps({"provider": SHIPPED_PROVIDERS}), encoding="utf-8")
 
 
 # ── 위임 실행 (in-process main·실 subprocess 스폰) ────────────────────────────────
@@ -486,6 +496,7 @@ def test_delegate_live_opencode(harness_tmp_path, monkeypatch, capsys):
     edit/bash deny). 추론 값은 싣지 않는다 — 테스트 env 모델은 variants 가 없어 어떤 값이든 실행 직전
     확인이 거부한다(`-m 모델#강도` 확인은 가짜 실행 파일 단위 시험이 맡는다)."""
     pd = _load_pd()
+    _declare_shipped_providers()
     repo, prompt = _seed_repo(harness_tmp_path)
     out_dir = harness_tmp_path / "raw"
     rc, reply, err = _delegate(pd, monkeypatch, capsys, repo, prompt, "opencode",
@@ -622,6 +633,7 @@ def test_ticket_growth_cross_claude_to_codex_release(harness_tmp_path, monkeypat
 )
 def test_ticket_growth_cross_claude_to_opencode_release(harness_tmp_path, monkeypatch, capsys):
     """Claude main이 쓰는 cross OpenCode transport에서 성장 역할 3종을 실제 왕복한다."""
+    _declare_shipped_providers()
     _run_cross_growth_route(
         _load_pd(), monkeypatch, capsys, harness_tmp_path, target="opencode", model=LIVE_MODEL,
         reasoning=None, timeout=_OPENCODE_TIMEOUT,

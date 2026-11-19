@@ -225,17 +225,22 @@ _TEMP_ENV_KEYS_WINDOWS: tuple[str, ...] = ("TEMP", "TMP")
 # `--basetemp` 가 드라이브 루트로 튄다.
 _TEMP_ENV_REFERENCE_POSIX = "$TMPDIR"
 _TEMP_ENV_REFERENCE_WINDOWS = "$env:TMPDIR"
-# 하네스별 인증/구동 필수 env(하네스-필수 마커만 명시 통과). 실 API key 는 각 하네스
+# 하네스별 인증/설정 위치 env(부모 env 에 있을 때만 넘긴다). 실 API key 는 각 하네스
 # config/auth 파일(HOME 기준 격리 홈)로 흐르므로 여기엔 경로/토글 키 위주로 최소 둔다.
 # 세 하네스 모두 **HOME 기반 파일 auth**(~/.codex·~/.claude·opencode
-# config)로 완주했다 — OPENAI/ANTHROPIC_API_KEY env 는 부재해도 무방(파일 auth 경로). load-bearing 키 =
-# base 의 HOME + opencode 의 OPENCODE_CONFIG_DIR(ollama provider config 위치). API-key 항목은 env-auth
-# adopter 용 보험이라 유지(존재 시만 통과·과잉 아님). 이 allowlist 로 충분(키 추가/축소 불요).
+# config)로 완주했다 — OPENAI/ANTHROPIC_API_KEY env 는 부재해도 무방(파일 auth 경로). API-key 항목은
+# env-auth adopter 용 보험이라 유지(존재 시만 통과·과잉 아님).
+# opencode 는 전역 설정 폴더를 `OPENCODE_CONFIG_DIR`, 없으면 `XDG_CONFIG_HOME`(없으면 HOME 아래 `.config`)
+# 아래 `opencode` 에서 찾고, 자료 폴더(저장한 API 키와 세션 DB)를 `XDG_DATA_HOME`(없으면 HOME 아래
+# `.local/share`) 아래 `opencode` 에서 찾는다(2.3.0·2.3.2 실측). 두 값을 넘기지 않으면 그 값을 기본과 다르게
+# 둔 사용자의 provider·모델과 저장한 API 키가 위임 전 모델 조회와 위임 자식 양쪽에서 보이지 않는다.
+# `XDG_CACHE_HOME`·`XDG_STATE_HOME` 은 넘기지 않는다. claude·codex 는 설정 폴더를 `CLAUDE_CONFIG_DIR`·
+# `CODEX_HOME`(없으면 HOME 아래)에서 찾으므로 XDG 값을 넘기지 않는다.
 # 인증/설정 전달 allowlist이며 세션 감지 마커가 아니다 — 감지 선언은 watchdog.HARNESS_SESSION_MARKERS 가 소유한다.
 _HARNESS_AUTH_ENV: dict[str, tuple[str, ...]] = {
     "codex": ("CODEX_HOME", "OPENAI_API_KEY"),
     "claude": ("ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR"),
-    "opencode": ("OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR"),
+    "opencode": ("OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME"),
 }
 
 

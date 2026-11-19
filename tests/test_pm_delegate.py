@@ -38,6 +38,8 @@ from pm_engine.infra import delegate_raw
 from pm_engine.infra.harness import delegate_run
 from pm_engine.domain import delegate_run_rules
 from pm_engine.infra import delegate_scope_git
+from pm_engine.domain import reviewer_result
+from pm_engine.infra import reviewer_target
 from pm_engine.domain import delegate_scope_rules
 from pm_engine.infra.harness import delegate_temp
 from pm_engine.infra.harness import delegate_transport
@@ -1617,6 +1619,68 @@ def test_build_env_fills_temp_from_measurement_when_parent_has_no_temp_name(
         "ComSpec": r"C:\Windows\system32\cmd.exe",
     })
     assert windows[delegate_run_rules._TEMP_ENV_KEYS_WINDOWS[0]] == "/measured/tmp"
+
+
+_OPENCODE_XDG_VALUES = {"XDG_CONFIG_HOME": "/custom/config", "XDG_DATA_HOME": "/custom/data"}
+_UNPASSED_XDG_VALUES = {"XDG_CACHE_HOME": "/custom/cache", "XDG_STATE_HOME": "/custom/state"}
+
+
+def test_build_env_passes_xdg_config_home_only_to_opencode(pd):
+    """opencode 위임 자식만 `XDG_CONFIG_HOME`(전역 설정 폴더)과 `XDG_DATA_HOME`(저장한 API 키·세션 DB 가 있는
+    자료 폴더)을 받는다.
+
+    부모 env 에 없으면 넣지 않는다(빈 값 금지, 하나만 있으면 그 하나만). claude·codex 자식 env 에는 넘기지
+    않는다. `XDG_CACHE_HOME`·`XDG_STATE_HOME` 은 어느 하네스에도 넘기지 않는다. Windows 는 이름 대소문자를
+    가리지 않는 같은 규칙을 탄다."""
+    samples = {
+        False: {"PATH": "/usr/bin", "HOME": "/home/u", "TMPDIR": "/tmp"},
+        True: _windows_env_sample(),
+    }
+    for windows, base in samples.items():
+        source = {**base, **_OPENCODE_XDG_VALUES, **_UNPASSED_XDG_VALUES}
+        env = delegate_env.build_env("opencode", windows=windows, source=source)
+        assert {key: env.get(key) for key in _OPENCODE_XDG_VALUES} == _OPENCODE_XDG_VALUES, windows
+        assert not set(_UNPASSED_XDG_VALUES) & set(env), windows
+        empty = delegate_env.build_env("opencode", windows=windows, source=base)
+        assert not set(_OPENCODE_XDG_VALUES) & set(empty), windows
+        for key, value in _OPENCODE_XDG_VALUES.items():
+            only = delegate_env.build_env("opencode", windows=windows, source={**base, key: value})
+            assert {name: only.get(name) for name in _OPENCODE_XDG_VALUES if name in only} == {key: value}
+        for harness in ("claude", "codex"):
+            assert (delegate_env.build_env(harness, windows=windows, source=source)
+                    == delegate_env.build_env(harness, windows=windows, source=base)), (harness, windows)
+    lower = {**_windows_env_sample(), "xdg_config_home": r"C:\cfg", "xdg_data_home": r"C:\data"}
+    env = delegate_env.build_env("opencode", windows=True, source=lower)
+    assert (env["XDG_CONFIG_HOME"], env["XDG_DATA_HOME"]) == (r"C:\cfg", r"C:\data")
+
+
+def test_opencode_model_lookup_and_child_see_same_xdg_config_home(pd, monkeypatch, tmp_path):
+    """위임 전 모델 조회(추론 강도 확인)와 위임 자식, 추가 리뷰어의 모델 조회가 같은 `XDG_CONFIG_HOME`·
+    `XDG_DATA_HOME` 을 받는다. 모두 같은 전역 설정·자료 폴더를 본다(추가 리뷰어 자식 env 가 같은 함수의
+    값인 것은 `test_additional_reviewer_parity.py` 가 고정한다)."""
+    configured = {"XDG_CONFIG_HOME": str(tmp_path / "xdg-config"), "XDG_DATA_HOME": str(tmp_path / "xdg-data")}
+    for key, value in configured.items():
+        monkeypatch.setenv(key, value)
+    seen = []
+
+    def _lookup(harness, reasoning, *, model, cwd, env):
+        seen.append(env)
+        return reasoning
+
+    monkeypatch.setattr(contract, "validate_reasoning", _lookup)
+    delegate_config._validate_reasoning("opencode", "high", model="provider/model", cwd=tmp_path)
+    reviewer_target.check_reviewer_reasoning(reviewer_target.ReviewerTarget(
+        source=reviewer_result.REVIEWER_SOURCE_STRUCTURED, command="opencode run",
+        harness="opencode", model="provider/model", reasoning="high"), cwd=tmp_path)
+    run = _FakeRun(stdout=_opencode_stdout())
+    delegate_execute._execute_attempt(
+        pm_paths.home_at(pd.REPO, board_root=pm_paths._board_root_at(pd.REPO)), harness="opencode",
+        model="provider/model", reasoning="high", role="developer", cwd=tmp_path, prompt="do",
+        timeout=30, output_dir=tmp_path / "raw", run_fn=run, attempt="primary",
+    )
+    for env in (*seen, run.calls[0]["env"]):
+        assert {key: env[key] for key in configured} == configured
+    assert len(seen) == 2
 
 
 def test_opencode_execution_injects_exact_runtime_role_after_env_sanitizing(
