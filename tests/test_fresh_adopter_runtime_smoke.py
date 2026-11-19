@@ -285,12 +285,15 @@ def test_live_opencode_adopter_survives_pm_update_then_operates(harness_tmp_path
         f"--- opencode stdout(tail) ---\n{proc.stdout[-2000:]}\n--- stderr(tail) ---\n{proc.stderr[-1000:]}"
     )
     assert _board_list_recognizes_ticket(dest), "pm_update 후 board.py list 가 실 opencode 발행 ticket 미인식"
-    # 3) 출하 모델은 빈 전역 설정에서 공급자 연결 설정이 없어 사용 한도 대상에서 빠지고
-    #    갱신이 그 사실을 알린다(T-0955). 이 단언은 위 opencode 실행 뒤에 둔다 — 비라이브 격리 가드
-    #    (`test_live_calls_use_isolated_env`)가 이 함수를 불러 실행 env 를 잡는다.
+    # 3) 출하 모델은 프로젝트 설정(`.opencode/opencode.jsonc`)의 공급자 선언으로 opencode 2.x 모델 목록에
+    #    나오므로, 전역 설정이 비어 있어도 갱신이 그 모델의 사용 한도를 반영하고 대상에서 빼지 않는다.
+    #    이 단언은 위 opencode 실행 뒤에 둔다 — 비라이브 격리 가드(`test_live_calls_use_isolated_env`)가
+    #    이 함수를 불러 실행 env 를 잡는다.
     update_output = upd.stdout + upd.stderr
-    assert "opencode 사용 한도 대상에서 뺀 모델" in update_output and SHIPPED_MODEL in update_output, (
-        "pm_update 가 연결 설정 없는 출하 모델의 제외를 알리지 않음(모델 목록 캐시에 ollama 공급자가 생겼는지 확인).\n"
+    provider, _, model_name = SHIPPED_MODEL.partition("/")
+    applied = f'provider.{provider}.models."{model_name}".limit.input'
+    assert applied in update_output and "opencode 사용 한도 대상에서 뺀 모델" not in update_output, (
+        "pm_update 가 출하 모델의 사용 한도를 반영하지 않았거나 그 모델을 대상에서 뺐다.\n"
         f"--- stdout ---\n{upd.stdout}\n--- stderr ---\n{upd.stderr}"
     )
 
