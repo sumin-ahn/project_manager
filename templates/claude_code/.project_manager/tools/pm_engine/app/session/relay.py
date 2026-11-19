@@ -14,7 +14,6 @@ from typing import NamedTuple, Protocol, TextIO
 
 from pm_engine.domain import ctx_recovery
 from pm_engine.infra import conf_store, fs
-from pm_engine.infra.harness import watchdog
 
 
 def ctx_budget(home, harness, session_model):
@@ -280,14 +279,11 @@ class Supervisor:
     def stop_marker_present(self, session_id: str) -> bool:
         return stop_marker_present(self.root, session_id)
 
-    def run_loop(self, cwd: str, in_stream: TextIO, out_stream: TextIO,
-                 cap_hit_log=None) -> int:
+    def run_loop(self, cwd: str, in_stream: TextIO, out_stream: TextIO) -> int:
         """바깥 루프 — spawn → relay → post-turn marker 감지 → respawn → repeat.
 
         - in_stream: 사용자 입력 라인 소스(stdin·테스트는 StringIO).
         - out_stream: PM reply 출력 sink(stdout·테스트는 StringIO).
-        - cap_hit_log: cap-hit(32k 절단 의심) loud advisory sink(기본 stderr·테스트는 list.append).
-          출력 소비 지점에서 응답이 cap 근방이면 경고만 낸다(never-block·stdout 무오염).
         - 반환 = exit code(0=정상 종료 EOF/quit · GUARD_TRIPPED_RC=연속 respawn 가드 발동).
 
         marker 존재는 payload 구분 없이 "다음 입력 전 회전" 단일 규칙으로 소비한다.
@@ -297,7 +293,6 @@ class Supervisor:
         spawn-loop 가 된다. 이 연속 즉시-회전 횟수를 지역 카운터로 세고 max 초과 시
         진단 1줄 후 종료한다. 사용자 turn 처리 가능한 세션에 도달하면 0으로 리셋한다.
         """
-        cap_hit_log = cap_hit_log if cap_hit_log is not None else watchdog._default_watchdog_log
         session_id = self._spawn(cwd, out_stream)
         consecutive_respawns = 0  # bootstrap 직후 연속 즉시-회전 횟수(지역).
 
@@ -339,11 +334,6 @@ class Supervisor:
             if reply is not None:
                 out_stream.write(reply + "\n")
                 out_stream.flush()
-                # 출력 소비 지점 — 응답이 출력 상한(32k tok) 근방이면 silent 절단 의심 loud advisory
-                # (stdout 은 이미 위에서 그대로 전달·경고는 별도 sink). 감지·sink 예외는 전파한다.
-                cap_hit, cap_reason = watchdog.detect_output_cap_hit(reply)
-                if cap_hit:
-                    cap_hit_log(watchdog.cap_hit_warning_message(cap_reason))
 
             # 매 turn 직후 1회 stat — marker 있으면 다음 입력을 받기 전에 회전.
             # 이 turn 은 이미 처리·응답됐으므로 입력을 다시 보내지 않는다.

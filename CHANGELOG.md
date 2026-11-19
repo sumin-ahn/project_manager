@@ -35,6 +35,7 @@
 - opencode 1.x 가 `.opencode/` 에 만들던 npm 산출물의 무시 규칙(`.opencode/.gitignore`)을 출하에서 뺐다. opencode 2.x 는 그 산출물을 만들지 않는다. 이미 설치한 곳은 갱신(`pm_update.py`, 관리자 앱 [적용])이 이 파일을 `.pm_import_backups/<날짜>/` 아래로 옮긴다. 1.x 가 남긴 `.opencode/node_modules`·`.opencode/package.json`·`.opencode/package-lock.json`·`.opencode/bun.lock` 은 이제 git 상태에 나타나므로 지운다.
 - OpenCode 역할 카드의 `temperature` 를 지웠다. opencode 2.x 는 에이전트의 `temperature` 를 모델 요청에 싣지 않는다(2.3.0·2.3.2 에서 확인).
 - `opencode` 를 `--pure` 대신 `--dir` 로 격리하라는 라이브 검증 원칙을 지우고, `/pm-release` 의 격리 `--dir` 안내를 실행 위치로 고쳤다. opencode 2.x 의 `run` 에는 두 옵션이 없다.
+- relay 의 출력 상한 감지를 지웠다. opencode 1.x 가 출력 상한(32000 토큰)에서 응답을 알리지 않고 자르던 것을 relay 가 응답 글자 수(34,560자 이상)로 짐작해 stderr 에 `[pm-orch] ⚠ 출력 상한(32k tok) 근방` 경고를 내던 장치다. opencode 2.x 는 출력 상한에 닿으면 이어 쓰고 끝내 넘치면 실패로 알리므로 이 짐작의 전제가 없고, 하네스와 상관없이 긴 정상 응답에도 경고가 났다. 경고 임계를 바꾸던 환경 변수 `PM_OC_CAP_HIT_THRESHOLD` 는 더 읽지 않는다. relay 의 응답 전달과 세션 회전은 그대로다.
 
 ### Fixed
 

@@ -677,6 +677,28 @@ def test_run_loop_has_no_resend_or_payload_classification_path(orch):
     assert "stop_marker_is_post_turn" not in source
 
 
+def test_run_loop_takes_cwd_and_streams_only(orch):
+    """run_loop 인자는 작업 폴더와 입출력 스트림뿐이다(호출처 `cli.hooks.run_relay` 도 이 셋만 넘긴다)."""
+    import inspect
+
+    parameters = list(inspect.signature(orch.Supervisor.run_loop).parameters)
+    assert parameters == ["self", "cwd", "in_stream", "out_stream"]
+
+
+def test_long_reply_is_relayed_whole_without_notice(orch, tmp_path, capsys):
+    """4만 자 응답도 그대로 전달하고 다음 입력을 이어 받는다. stderr 에는 아무것도 쓰지 않는다."""
+    driver = _make_driver(orch, tmp_path)
+    long_text = "가" * 40_000
+    out_stream = io.StringIO()
+    rc = orch.Supervisor(driver, root=tmp_path, task="demo-task").run_loop(
+        "/cwd", io.StringIO(f"{long_text}\nnext\n"), out_stream,
+    )
+    assert rc == 0
+    assert out_stream.getvalue() == f"reply:{long_text}\nreply:next\n"
+    assert [text for _, text in driver.relays] == [long_text, "next"]
+    assert capsys.readouterr().err == ""
+
+
 # ── ⑤ stateless (상태 미보유) ────────────────────────────────────────────────
 
 def test_supervisor_holds_no_conversation_state(orch, tmp_path):
